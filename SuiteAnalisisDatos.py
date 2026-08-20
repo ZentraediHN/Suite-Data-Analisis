@@ -6,8 +6,8 @@ import time
 import shutil
 import zipfile
 import ctypes
-import csv
 import threading
+import csv
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
@@ -20,6 +20,40 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+
+# ==============================================================================
+# DETECTOR AUTOMÁTICO DE ENCABEZADOS CSV
+# ==============================================================================
+
+def detectar_linea_encabezado_csv(filepath, max_lineas_revision=40):
+    """
+    Analiza las primeras filas del CSV y encuentra la línea donde comienza
+    la tabla real (la que contiene la mayor cantidad de columnas).
+    """
+    max_cols = 0
+    linea_encabezado = 0
+
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for idx in range(max_lineas_revision):
+                linea = f.readline()
+                if not linea:
+                    break
+                
+                # Detecta separador (coma o punto y coma)
+                sep = ';' if ';' in linea and linea.count(';') > linea.count(',') else ','
+                campos = next(csv.reader([linea], delimiter=sep), [])
+                num_campos = len(campos)
+
+                # La fila con más columnas es el encabezado de la tabla principal
+                if num_campos > max_cols:
+                    max_cols = num_campos
+                    linea_encabezado = idx
+    except Exception:
+        linea_encabezado = 0
+
+    return linea_encabezado
 
 
 # ==============================================================================
@@ -122,36 +156,6 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
     doc_original.close()
 
 
-
-def detectar_linea_encabezado_csv(filepath, max_lineas_revision=40):
-    """
-    Analiza las primeras filas del archivo CSV y determina la línea (0-indexed)
-    donde comienza la tabla real basándose en el número máximo de columnas.
-    """
-    max_cols = 0
-    linea_encabezado = 0
-
-    try:
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            for idx in range(max_lineas_revision):
-                linea = f.readline()
-                if not linea:
-                    break
-                
-                # Autodetecta si el separador es coma (,) o punto y coma (;)
-                sep = ';' if ';' in linea and linea.count(';') > linea.count(',') else ','
-                campos = next(csv.reader([linea], delimiter=sep), [])
-                num_campos = len(campos)
-
-                # La fila del encabezado real tendrá la cantidad máxima de columnas
-                if num_campos > max_cols:
-                    max_cols = num_campos
-                    linea_encabezado = idx
-    except Exception:
-        linea_encabezado = 0
-
-    return linea_encabezado
-
 # ==============================================================================
 # CLASE PRINCIPAL DE LA SUITE
 # ==============================================================================
@@ -247,19 +251,19 @@ class SuiteContableIntegrada:
         self.setup_ui_resumen()
         self.setup_ui_convertidor()
 
-def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
+    def _obtener_lazy_frame(self, paths, col_dtypes=None):
+        """Carga los archivos omitiendo automáticamente los metadatos iniciales."""
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
         else:
             if len(paths) == 1:
-                skip = skip_rows_manual if skip_rows_manual is not None else detectar_linea_encabezado_csv(paths[0])
+                skip = detectar_linea_encabezado_csv(paths[0])
                 return pl.scan_csv(paths[0], skip_rows=skip, schema_overrides=col_dtypes)
             else:
-                # Si son múltiples CSVs, detecta el salto de filas de cada uno individualmente
                 frames = []
                 for p in paths:
-                    skip = skip_rows_manual if skip_rows_manual is not None else detectar_linea_encabezado_csv(p)
+                    skip = detectar_linea_encabezado_csv(p)
                     frames.append(pl.scan_csv(p, skip_rows=skip, schema_overrides=col_dtypes))
                 return pl.concat(frames)
 
@@ -311,7 +315,7 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
                 self.combo_col_sep['values'] = columnas
                 if columnas:
                     self.combo_col_sep.current(0)
-                self.status_sep.config(text=f"Columnas cargadas desde {len(paths)} archivo(s).", fg="green")
+                self.status_sep.config(text=f"Columnas detectadas correctamente en {len(paths)} archivo(s).", fg="green")
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo leer el archivo:\n{e}")
 
@@ -419,7 +423,7 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
                 for c in columnas:
                     self.listbox_vals.insert(tk.END, c)
 
-                self.status_res.config(text=f"Columnas cargadas desde {len(paths)} archivo(s).", fg="green")
+                self.status_res.config(text=f"Columnas detectadas correctamente en {len(paths)} archivo(s).", fg="green")
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo leer el archivo:\n{e}")
 
@@ -516,7 +520,7 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
     def _convertir_parquet_thread(self):
         archivo_out = self.out_file_conv.get()
         try:
-            lazy_df = pl.scan_csv(self.paths_conv)
+            lazy_df = self._obtener_lazy_frame(self.paths_conv)
             lazy_df.sink_parquet(archivo_out, compression="zstd")
 
             self.root.after(0, self.status_conv.config, {"text": "✅ Conversión a Parquet completada.", "fg": "green"})
@@ -592,7 +596,6 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
             self.output_dir_pdf.set(dir_selected)
 
     def log_pdf(self, text):
-        """Muestra la salida y el progreso detallado en la consola visual del Divisor PDF."""
         self.log_widget_pdf.config(state="normal")
         self.log_widget_pdf.insert(tk.END, text + "\n")
         self.log_widget_pdf.see(tk.END)
@@ -820,22 +823,18 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
         frame_inputs.pack(fill="x", padx=15, pady=5)
         frame_inputs.columnconfigure(1, weight=1)
 
-        # PDF Entrada
         ttk.Label(frame_inputs, text="PDF de Entrada:").grid(row=0, column=0, sticky="w", pady=4)
         ttk.Entry(frame_inputs, textvariable=self.idx_pdf_entrada).grid(row=0, column=1, sticky="ew", padx=5, pady=4)
         ttk.Button(frame_inputs, text="Buscar...", command=self._buscar_idx_pdf).grid(row=0, column=2, padx=2, pady=4)
 
-        # TXT Índice
         ttk.Label(frame_inputs, text="Archivo TXT (Índice):").grid(row=1, column=0, sticky="w", pady=4)
         ttk.Entry(frame_inputs, textvariable=self.idx_txt_indice).grid(row=1, column=1, sticky="ew", padx=5, pady=4)
         ttk.Button(frame_inputs, text="Buscar...", command=self._buscar_idx_txt).grid(row=1, column=2, padx=2, pady=4)
 
-        # PDF Salida
         ttk.Label(frame_inputs, text="PDF de Salida:").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(frame_inputs, textvariable=self.idx_pdf_salida).grid(row=2, column=1, sticky="ew", padx=5, pady=4)
         ttk.Button(frame_inputs, text="Guardar en...", command=self._guardar_idx_pdf).grid(row=2, column=2, padx=2, pady=4)
 
-        # Botón de Procesamiento
         self.btn_process_idx = ttk.Button(
             self.tab_pdf_indice, 
             text="⚡ GENERAR ÍNDICE, VÍNCULOS Y MARCADORES", 
@@ -843,7 +842,6 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
         )
         self.btn_process_idx.pack(fill="x", padx=15, pady=8)
 
-        # Consola de Monitorización
         log_frame = ttk.LabelFrame(self.tab_pdf_indice, text=" Consola de Monitorización y Diagnóstico ", padding=10)
         log_frame.pack(fill="both", expand=True, padx=15, pady=(5, 15))
 
@@ -876,7 +874,6 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
             self.idx_pdf_salida.set(ruta)
 
     def log_idx(self, text):
-        """Escribe en la consola visual de la subpestaña de Índices."""
         self.log_widget_idx.config(state="normal")
         self.log_widget_idx.insert(tk.END, text + "\n")
         self.log_widget_idx.see(tk.END)
@@ -925,7 +922,6 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
             self.log_idx("🚀 INICIANDO GENERACIÓN DE ÍNDICE Y MARCADORES")
             self.log_idx("==================================================")
 
-            # 1. Lectura del TXT
             self.log_idx(f"📖 Leyendo estructura desde: {os.path.basename(txt_indice)}")
             items = []
             with open(txt_indice, "r", encoding="utf-8") as f:
@@ -943,7 +939,6 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
 
             pdf_indice_temp = os.path.join(os.path.dirname(pdf_salida), "temp_indice_page_ui.pdf")
 
-            # 2. Calcular páginas que ocupará el índice
             self.log_idx("\n📐 Maquetando preliminarmente para calcular desfase de páginas...")
             crear_pagina_indice_pdf(items, 0, pdf_indice_temp)
             
@@ -952,17 +947,14 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
             doc_medida.close()
             self.log_idx(f"ℹ️ El índice ocupará {desfase_real} página(s). Desfase aplicado a contenidos: +{desfase_real} pág(s).")
 
-            # 3. Generar índice final con la numeración corregida
             self.log_idx("🎨 Generando páginas visuales definitivas del índice...")
             crear_pagina_indice_pdf(items, desfase_real, pdf_indice_temp)
 
-            # 4. Ensamblado, enlaces y marcadores
             self.log_idx("\n🧩 Ensamblando índice con el documento original...")
             ensamblar_y_vincular_pdf(
                 pdf_entrada, items, pdf_indice_temp, pdf_salida, desfase_real, log_func=self.log_idx
             )
 
-            # 5. Limpieza de archivos temporales
             if os.path.exists(pdf_indice_temp):
                 os.remove(pdf_indice_temp)
                 self.log_idx("🧹 Archivos temporales eliminados.")
@@ -1002,7 +994,7 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
             text=(
                 "Esta pestaña se encuentra en modo de presentación (Demo).\n\n"
                 "Funcionalidades planificadas para este módulo:\n"
-                " • Análisis de Ley de Benford para detección de alteraciones de cifras.\n"
+                " • Análisis de Ley de Benford para detección de alterations de cifras.\n"
                 " • Algoritmos de muestreo estadístico (MUS, Estratificado, Aleatorio).\n"
                 " • Identificación automática de pagos fraccionados o atípicos.\n"
                 " • Generación de matriz de riesgos para dictamen fiscal."
@@ -1014,7 +1006,6 @@ def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
 
 
 if __name__ == "__main__":
-    # --- CONFIGURACIÓN DE ALTA RESOLUCIÓN (DPI AWARENESS EN WINDOWS) ---
     if sys.platform == "win32":
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -1023,7 +1014,6 @@ if __name__ == "__main__":
                 ctypes.windll.user32.SetProcessDPIAware()
             except Exception:
                 pass
-    # --------------------------------------------------------------------
 
     root = tk.Tk()
     app = SuiteContableIntegrada(root)
