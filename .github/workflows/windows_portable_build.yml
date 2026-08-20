@@ -39,7 +39,7 @@ jobs:
           # --onefile: Crea un solo archivo .exe (en lugar de una carpeta)
           # --noconsole: Opcional. Úsalo si tu App tiene interfaz gráfica (GUI) y no quieres que se abra una ventana negra de comandos atrás.
           # Si tu App es de consola, quita --noconsole.
-          pyinstaller --onefile --noconsole SuiteDataAnalisis.py
+          pyinstaller --onefile --noconsole SuiteAnalisisDatos.py
 
       # 5. Subir el archivo compilado como un "Artefacto" de GitHub
       # Esto permite descargarlo después de que termine la ejecución.
