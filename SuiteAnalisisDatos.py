@@ -5,6 +5,7 @@ import math
 import time
 import shutil
 import zipfile
+import ctypes
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -973,6 +974,17 @@ class SuiteContableIntegrada:
 
 
 if __name__ == "__main__":
+    # --- CONFIGURACIÓN DE ALTA RESOLUCIÓN (DPI AWARENESS EN WINDOWS) ---
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    # --------------------------------------------------------------------
+
     root = tk.Tk()
     app = SuiteContableIntegrada(root)
     root.mainloop()
