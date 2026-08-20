@@ -6,6 +6,7 @@ import time
 import shutil
 import zipfile
 import ctypes
+import csv
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -121,6 +122,36 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
     doc_original.close()
 
 
+
+def detectar_linea_encabezado_csv(filepath, max_lineas_revision=40):
+    """
+    Analiza las primeras filas del archivo CSV y determina la línea (0-indexed)
+    donde comienza la tabla real basándose en el número máximo de columnas.
+    """
+    max_cols = 0
+    linea_encabezado = 0
+
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for idx in range(max_lineas_revision):
+                linea = f.readline()
+                if not linea:
+                    break
+                
+                # Autodetecta si el separador es coma (,) o punto y coma (;)
+                sep = ';' if ';' in linea and linea.count(';') > linea.count(',') else ','
+                campos = next(csv.reader([linea], delimiter=sep), [])
+                num_campos = len(campos)
+
+                # La fila del encabezado real tendrá la cantidad máxima de columnas
+                if num_campos > max_cols:
+                    max_cols = num_campos
+                    linea_encabezado = idx
+    except Exception:
+        linea_encabezado = 0
+
+    return linea_encabezado
+
 # ==============================================================================
 # CLASE PRINCIPAL DE LA SUITE
 # ==============================================================================
@@ -216,12 +247,21 @@ class SuiteContableIntegrada:
         self.setup_ui_resumen()
         self.setup_ui_convertidor()
 
-    def _obtener_lazy_frame(self, paths, col_dtypes=None):
+def _obtener_lazy_frame(self, paths, col_dtypes=None, skip_rows_manual=None):
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
         else:
-            return pl.scan_csv(paths, schema_overrides=col_dtypes) if col_dtypes else pl.scan_csv(paths)
+            if len(paths) == 1:
+                skip = skip_rows_manual if skip_rows_manual is not None else detectar_linea_encabezado_csv(paths[0])
+                return pl.scan_csv(paths[0], skip_rows=skip, schema_overrides=col_dtypes)
+            else:
+                # Si son múltiples CSVs, detecta el salto de filas de cada uno individualmente
+                frames = []
+                for p in paths:
+                    skip = skip_rows_manual if skip_rows_manual is not None else detectar_linea_encabezado_csv(p)
+                    frames.append(pl.scan_csv(p, skip_rows=skip, schema_overrides=col_dtypes))
+                return pl.concat(frames)
 
     def setup_ui_separador(self):
         self.file_display_sep = tk.StringVar()
