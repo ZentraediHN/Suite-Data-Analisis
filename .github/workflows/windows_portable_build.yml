@@ -41,11 +41,10 @@ jobs:
           # Si tu App es de consola, quita --noconsole.
           pyinstaller --onefile --noconsole SuiteAnalisisDatos.py
 
-      # 5. Subir el archivo compilado como un "Artefacto" de GitHub
-      # Esto permite descargarlo después de que termine la ejecución.
-      - name: Subir ejecutable final
-        uses: actions/upload-artifact@v4
-        with:
-          name: SuiteDataAnalisis-Windows-Exe # Nombre del paquete de descarga
-          path: dist/SuiteDataAnalisis.exe # Ruta donde PyInstaller guarda el .exe
-          retention-days: 5 # Tiempo que guardará el archivo antes de borrarlo
+        # 5. Subir el archivo compilado como un "Artefacto" de GitHub
+          - name: Subir ejecutable final
+            uses: actions/upload-artifact@v4
+            with:
+              name: SuiteAnalisisDatos-Windows-Exe
+              path: dist/SuiteAnalisisDatos.exe
+              retention-days: 5
