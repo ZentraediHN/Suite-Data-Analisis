@@ -26,34 +26,92 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # DETECTOR AUTOMÁTICO DE ENCABEZADOS CSV
 # ==============================================================================
 
-def detectar_linea_encabezado_csv(filepath, max_lineas_revision=40):
+def es_probable_encabezado(campos):
     """
-    Analiza las primeras filas del CSV y encuentra la línea donde comienza
-    la tabla real (la que contiene la mayor cantidad de columnas).
+    Evalúa si una lista de campos parece ser un encabezado
+    (predominio de texto sobre números/fechas).
     """
-    max_cols = 0
-    linea_encabezado = 0
+    if not campos or len(campos) <= 1:
+        return False
 
+    textos = 0
+    numeros_o_fechas = 0
+
+    for c in campos:
+        c_str = str(c).strip()
+        if not c_str:
+            continue
+
+        # Detectar si el campo es un número decimal o entero
+        try:
+            float(c_str.replace(',', '.'))
+            numeros_o_fechas += 1
+            continue
+        except ValueError:
+            pass
+
+        # Detectar si el campo es una fecha (ej. 19/3/2023 o 2023-03-19)
+        if ('/' in c_str or '-' in c_str) and any(char.isdigit() for char in c_str):
+            numeros_o_fechas += 1
+            continue
+
+        textos += 1
+
+    total = textos + numeros_o_fechas
+    if total == 0:
+        return False
+
+    # Es encabezado si más del 60% de los campos son nombres en texto
+    return (textos / total) > 0.6
+
+
+def detectar_linea_encabezado_csv(filepath, max_lineas_revision=50):
+    """
+    Encuentra la fila (0-indexed) del encabezado real buscando la estructura
+    con mayor número de columnas que contenga etiquetas de texto y descartando
+    filas de metadatos o títulos intermedios.
+    """
+    filas = []
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             for idx in range(max_lineas_revision):
                 linea = f.readline()
                 if not linea:
                     break
-                
+
                 # Detecta separador (coma o punto y coma)
                 sep = ';' if ';' in linea and linea.count(';') > linea.count(',') else ','
                 campos = next(csv.reader([linea], delimiter=sep), [])
-                num_campos = len(campos)
+                
+                # Contar campos que no estén totalmente vacíos
+                campos_validos = [c for c in campos if c.strip() != '']
+                num_campos = len(campos_validos)
 
-                # La fila con más columnas es el encabezado de la tabla principal
-                if num_campos > max_cols:
-                    max_cols = num_campos
-                    linea_encabezado = idx
+                filas.append({
+                    'idx': idx,
+                    'num_cols': num_campos,
+                    'campos': campos,
+                    'es_encabezado': es_probable_encabezado(campos_validos)
+                })
+
+        # 1. Filtrar solo las filas clasificadas como 'encabezado de texto'
+        candidatas = [f for f in filas if f['es_encabezado']]
+
+        if candidatas:
+            # Elegir la que tenga el MÁXIMO número de columnas
+            mejor_encabezado = max(candidatas, key=lambda x: x['num_cols'])
+            return mejor_encabezado['idx']
+
+        # 2. Si falla la detección de texto, tomar la primera fila con mayor número de columnas
+        max_cols = max(f['num_cols'] for f in filas) if filas else 0
+        for f in filas:
+            if f['num_cols'] == max_cols and max_cols > 1:
+                return f['idx']
+
     except Exception:
-        linea_encabezado = 0
+        pass
 
-    return linea_encabezado
+    return 0
 
 
 # ==============================================================================
@@ -994,7 +1052,7 @@ class SuiteContableIntegrada:
             text=(
                 "Esta pestaña se encuentra en modo de presentación (Demo).\n\n"
                 "Funcionalidades planificadas para este módulo:\n"
-                " • Análisis de Ley de Benford para detección de alterations de cifras.\n"
+                " • Análisis de Ley de Benford para detección de alteraciones de cifras.\n"
                 " • Algoritmos de muestreo estadístico (MUS, Estratificado, Aleatorio).\n"
                 " • Identificación automática de pagos fraccionados o atípicos.\n"
                 " • Generación de matriz de riesgos para dictamen fiscal."
