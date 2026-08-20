@@ -22,29 +22,25 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Puedes cambiar la versión si lo necesitas (ej: 3.11, 3.12)
-          cache: 'pip' # Cachea las dependencias para acelerar futuras compilaciones
+          python-version: '3.10'
+          cache: 'pip'
 
       # 3. Instalar dependencias necesarias
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
-          # Instala las librerías de tu proyecto si existe requirements.txt
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
 
       # 4. Ejecutar PyInstaller para crear el ejecutable
       - name: Compilar con PyInstaller
         run: |
-          # --onefile: Crea un solo archivo .exe (en lugar de una carpeta)
-          # --noconsole: Opcional. Úsalo si tu App tiene interfaz gráfica (GUI) y no quieres que se abra una ventana negra de comandos atrás.
-          # Si tu App es de consola, quita --noconsole.
           pyinstaller --onefile --noconsole SuiteAnalisisDatos.py
 
       # 5. Subir el archivo compilado como un "Artefacto" de GitHub
-        - name: Subir ejecutable final
-          uses: actions/upload-artifact@v4
-          with:
-            name: SuiteAnalisisDatos-Windows-Exe
-            path: dist/SuiteAnalisisDatos.exe
-            retention-days: 5
+      - name: Subir ejecutable final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuiteAnalisisDatos-Windows-Exe
+          path: dist/SuiteAnalisisDatos.exe
+          retention-days: 5
