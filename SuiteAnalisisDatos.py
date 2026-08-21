@@ -13,7 +13,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
 import polars as pl
-import xlsxwriter  # Importación explícita para empaquetado en aplicación portable (.exe)
+import xlsxwriter
+import openpyxl  # Soporte para lectura e inspección de estructuras Excel
 from PyPDF2 import PdfReader, PdfWriter
 import pikepdf
 
@@ -25,7 +26,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 
 # ==============================================================================
-# CACHÉ Y DETECTOR ROBUSTO DE ENCABEZADOS DE ARCHIVOS
+# CACHÉ Y DETECTOR ROBUSTO DE ENCABEZADOS DE ARCHIVOS (CSV & EXCEL)
 # ==============================================================================
 
 _CLEAN_FILES_CACHE = {}
@@ -64,16 +65,54 @@ def es_encabezado_real(campos):
     return coincidencias_header >= 1 or (coincidencias_datos == 0)
 
 
-def obtener_archivo_csv_limpio(filepath):
+def obtener_archivo_limpio(filepath):
     """
-    Identifica el encabezado real y genera una versión limpia.
-    Utiliza caché para evitar bloqueos de archivo por relecturas múltiples.
+    Identifica el encabezado real en CSV o Excel (.xlsx, .xlsm), omitiendo títulos
+    o texto no relevante superior, y retorna una ruta de trabajo estandarizada.
     """
     if filepath in _CLEAN_FILES_CACHE and os.path.exists(_CLEAN_FILES_CACHE[filepath][0]):
         return _CLEAN_FILES_CACHE[filepath]
 
-    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8']
+    ext = os.path.splitext(filepath)[1].lower()
 
+    # --- PROCESAMIENTO PARA ARCHIVOS EXCEL ---
+    if ext in ['.xlsx', '.xlsm']:
+        try:
+            wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+            sheet = wb.active
+
+            header_idx = 0
+            for idx, row in enumerate(sheet.iter_rows(values_only=True)):
+                if idx > 150:
+                    break
+                if not row:
+                    continue
+                row_vals = [str(c).strip() if c is not None else "" for c in row]
+                if any(row_vals) and es_encabezado_real(row_vals):
+                    header_idx = idx
+                    break
+
+            temp_dir = os.path.join(os.path.dirname(filepath), "_temp_cleaned_csv")
+            os.makedirs(temp_dir, exist_ok=True)
+            clean_filename = f"clean_xl_{os.path.basename(filepath)}.csv"
+            clean_path = os.path.join(temp_dir, clean_filename)
+
+            with open(clean_path, 'w', encoding='utf-8', newline='') as f_out:
+                writer = csv.writer(f_out)
+                for idx, row in enumerate(sheet.iter_rows(values_only=True)):
+                    if idx < header_idx:
+                        continue
+                    writer.writerow([c if c is not None else "" for c in row])
+
+            wb.close()
+            _CLEAN_FILES_CACHE[filepath] = (clean_path, ',')
+            return clean_path, ','
+        except Exception:
+            _CLEAN_FILES_CACHE[filepath] = (filepath, ',')
+            return filepath, ','
+
+    # --- PROCESAMIENTO PARA ARCHIVOS CSV ---
+    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8']
     for enc in encodings:
         try:
             lineas_raw = []
@@ -268,7 +307,7 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 class SuiteContableIntegrada:
     def __init__(self, root):
         self.root = root
-        self.root.title("Suite de Análisis de Datos y Documentos (CSV / Parquet / PDF) - Linux Edition")
+        self.root.title("Suite de Análisis de Datos y Documentos (CSV / Excel / Parquet / PDF)")
         self.root.geometry("780x780")
         self.root.minsize(700, 680)
 
@@ -328,19 +367,22 @@ class SuiteContableIntegrada:
 
         self.csv_notebook.add(self.tab_separador, text=" 📂 Separar por Cuenta ")
         self.csv_notebook.add(self.tab_resumen, text=" 📊 Resumen / Balanza ")
-        self.csv_notebook.add(self.tab_convertidor, text=" ⚡ Convertidor CSV ➔ Parquet ")
+        self.csv_notebook.add(self.tab_convertidor, text=" ⚡ Convertidor ➔ Parquet ")
 
         self.setup_ui_separador()
         self.setup_ui_resumen()
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
+        if not paths:
+            return None
+
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
         else:
             if len(paths) == 1:
-                clean_path, sep = obtener_archivo_csv_limpio(paths[0])
+                clean_path, sep = obtener_archivo_limpio(paths[0])
                 return pl.scan_csv(
                     clean_path, 
                     separator=sep, 
@@ -351,7 +393,7 @@ class SuiteContableIntegrada:
             else:
                 frames = []
                 for p in paths:
-                    clean_path, sep = obtener_archivo_csv_limpio(p)
+                    clean_path, sep = obtener_archivo_limpio(p)
                     frames.append(pl.scan_csv(
                         clean_path, 
                         separator=sep, 
@@ -376,7 +418,7 @@ class SuiteContableIntegrada:
         self.out_dir_sep = tk.StringVar()
         self.format_sep = tk.StringVar(value="csv")
 
-        tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
         f_file = tk.Frame(self.tab_separador)
         f_file.pack()
         tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
@@ -406,7 +448,7 @@ class SuiteContableIntegrada:
         self.status_sep.pack()
 
     def seleccionar_archivos_sep(self):
-        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Parquet", "*.parquet")])
+        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
         if paths:
             self.paths_sep = list(paths)
             self.file_display_sep.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
@@ -474,7 +516,7 @@ class SuiteContableIntegrada:
         self.out_file_res = tk.StringVar()
         self.format_res = tk.StringVar(value="xlsx")
 
-        tk.Label(self.tab_resumen, text="1. Selecciona Archivo(s) de Entrada (CSV o Parquet):", font=("Arial", 10, "bold")).pack(pady=(10, 2))
+        tk.Label(self.tab_resumen, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(10, 2))
         f_file = tk.Frame(self.tab_resumen)
         f_file.pack()
         tk.Entry(f_file, textvariable=self.file_display_res, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
@@ -512,7 +554,7 @@ class SuiteContableIntegrada:
         self.status_res.pack()
 
     def seleccionar_archivos_res(self):
-        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Parquet", "*.parquet")])
+        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
         if paths:
             self.paths_res = list(paths)
             self.file_display_res.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
@@ -585,7 +627,7 @@ class SuiteContableIntegrada:
         self.file_display_conv = tk.StringVar()
         self.out_file_conv = tk.StringVar()
 
-        tk.Label(self.tab_convertidor, text="1. Selecciona el o los Archivos CSV a Convertir:", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+        tk.Label(self.tab_convertidor, text="1. Selecciona el o los Archivos a Convertir (CSV o Excel):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
         f_file = tk.Frame(self.tab_convertidor)
         f_file.pack()
         tk.Entry(f_file, textvariable=self.file_display_conv, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
@@ -604,10 +646,10 @@ class SuiteContableIntegrada:
         self.status_conv.pack()
 
     def seleccionar_archivos_conv(self):
-        paths = filedialog.askopenfilenames(filetypes=[("Archivos CSV", "*.csv")])
+        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm")])
         if paths:
             self.paths_conv = list(paths)
-            self.file_display_conv.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos CSV seleccionados")
+            self.file_display_conv.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
             self.out_file_conv.set(os.path.join(os.path.dirname(paths[0]), "Datos_Contables_Consolidados.parquet"))
             self.status_conv.config(text=f"{len(paths)} archivo(s) listos para conversión.", fg="green")
 
@@ -618,7 +660,7 @@ class SuiteContableIntegrada:
 
     def iniciar_proceso_conv(self):
         if not self.paths_conv or not self.out_file_conv.get():
-            messagebox.showwarning("Datos Incompletos", "Selecciona los archivos CSV de origen y el destino .parquet.")
+            messagebox.showwarning("Datos Incompletos", "Selecciona los archivos de origen (CSV o Excel) y el destino .parquet.")
             return
 
         self.btn_process_conv.config(state=tk.DISABLED)
@@ -632,7 +674,7 @@ class SuiteContableIntegrada:
             lazy_df.sink_parquet(archivo_out, compression="zstd")
 
             self.root.after(0, self.status_conv.config, {"text": "✅ Conversión a Parquet completada.", "fg": "green"})
-            self.root.after(0, messagebox.showinfo, "Éxito", f"Se han consolidado {len(self.paths_conv)} archivo(s) CSV en el archivo Parquet:\n{archivo_out}")
+            self.root.after(0, messagebox.showinfo, "Éxito", f"Se han consolidado {len(self.paths_conv)} archivo(s) en el archivo Parquet:\n{archivo_out}")
         except Exception as e:
             self.root.after(0, messagebox.showerror, "Error Fatal", f"Ocurrió un error:\n{e}")
             self.root.after(0, self.status_conv.config, {"text": "❌ Error.", "fg": "red"})
