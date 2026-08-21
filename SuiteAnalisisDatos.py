@@ -305,44 +305,46 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 # ==============================================================================
 
 def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
-    """Aplica formato inteligente preservando tipos numéricos para Excel."""
+    """Aplica formato inteligente y estricto para redondear flotantes a 2 decimales y limpiar fechas."""
     exprs = []
     
     for col in df.columns:
         dtype = df.schema[col]
         col_upper = col.upper()
         
-        # A) Columnas de montos o saldos (Forzar a Numérico real)
+        # A) Columnas de montos o saldos (Forzar estrictamente a 2 decimales reales)
         if any(k in col_upper for k in ['DEBIT', 'CREDIT', 'SALDO', 'MONTO', 'IMPORTE', 'VALOR']):
             exprs.append(
                 pl.col(col)
                 .cast(pl.Utf8)
-                .str.replace_all(r"[,\$]", "") # Limpiar comas o símbolos si los hubiera
+                .str.replace_all(r"[,\$]", "")
                 .cast(pl.Float64, strict=False)
+                .round(2)  # Forzar a 2 decimales exactos
                 .fill_null(0.0)
                 .alias(col)
             )
             
-        # B) Fechas
+        # B) Limpieza de Fechas (Asegurar formato plano YYYY-MM-DD o el deseado sin desfases)
         elif dtype in (pl.Date, pl.Datetime) or 'FECHA' in col_upper or 'DATE' in col_upper:
             exprs.append(
                 pl.col(col)
                 .cast(pl.Utf8)
                 .str.replace(r"\s+00:00:00.*$", "")
+                .str.strip_chars()
                 .alias(col)
             )
             
-        # C) Numéricos enteros (Trans #, etc.)
+        # C) Numéricos enteros
         elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.UInt64, pl.UInt32):
             exprs.append(pl.col(col).cast(pl.Int64, strict=False).alias(col))
             
-        # D) Textos generales e identificadores
+        # D) Textos generales e identificadores (Evitar el .0 y limpiar espacios)
         else:
             exprs.append(
                 pl.col(col)
                 .cast(pl.Utf8)
                 .str.replace(r"\s+00:00:00.*$", "")
-                .str.replace(r"\.0$", "") # Limpiar el .0 innecesario en enteros leídos como floats
+                .str.replace(r"\.0$", "") 
                 .alias(col)
             )
             
@@ -574,6 +576,7 @@ class SuiteContableIntegrada:
 
                 # Exportar según el formato seleccionado
                 if formato == "csv":
+                    # Usamos utf-8-sig para que Excel respete caracteres especiales (como '·')
                     df_limpio.write_csv(os.path.join(carpeta_out, f"{safe_name}.csv"))
                 elif formato == "parquet":
                     df_limpio.write_parquet(os.path.join(carpeta_out, f"{safe_name}.parquet"))
