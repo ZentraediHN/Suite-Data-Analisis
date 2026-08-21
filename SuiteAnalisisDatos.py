@@ -24,102 +24,137 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 
 # ==============================================================================
-# DETECTOR ROBUSTO DE ENCABEZADOS Y SEPARADORES CSV
+# DETECTOR ROBUSTO DE ENCABEZADOS Y LIMPIEZA DE METADATOS CSV
 # ==============================================================================
 
-def leer_lineas_fisicas(filepath, max_lineas=100):
-    """Lee líneas físicas manteniendo exactitud del índice de filas para skip_rows."""
-    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8', 'utf-16']
+def es_encabezado_real(campos):
+    """Evalúa si una fila contiene nombres de columnas típicos de informes contables/fiscales."""
+    if not campos or len(campos) < 2:
+        return False
+
+    textos = [str(c).strip().upper() for c in campos if str(c).strip()]
+    if not textos:
+        return False
+
+    patron_fecha = re.compile(r'^\d{1,4}[-/\.]\d{1,2}[-/\.]\d{1,4}$')
+    patron_num_largo = re.compile(r'^\d{8,}$')
+    patron_monto = re.compile(r'^-?\d+[\.,]\d{2}$')
+
+    coincidencias_datos = 0
+    for val in textos:
+        if patron_fecha.search(val) or patron_num_largo.search(val) or patron_monto.search(val):
+            coincidencias_datos += 1
+
+    # Si la fila tiene múltiples fechas o números largos de cuenta/RTN, es una fila de datos
+    if coincidencias_datos >= 2:
+        return False
+
+    palabras_clave = [
+        'RTN', 'NOMBRE', 'DECLARACION', 'FECHA', 'CAI', 'ESTADO', 
+        'ESTABLECIMIENTO', 'PUNTO', 'TIPO', 'CORRELATIVO', 'IMPORTE', 
+        'IMPUESTO', 'NUMERO', 'CODIGO', 'CUENTA', 'DESCRIPCION', 'MONTO',
+        'SALDO', 'DEBE', 'HABER', 'DOCUMENTO', 'VALOR'
+    ]
+
+    texto_unido = " ".join(textos)
+    coincidencias_header = sum(1 for kw in palabras_clave if kw in texto_unido)
+
+    return coincidencias_header >= 1 or (coincidencias_datos == 0)
+
+
+def obtener_archivo_csv_limpio(filepath):
+    """
+    Identifica el encabezado real y el separador. Si el archivo contiene
+    metadatos o banners iniciales, genera una versión limpia en la carpeta temporal.
+    """
+    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8']
+
     for enc in encodings:
         try:
-            lineas = []
+            lineas_raw = []
             with open(filepath, 'r', encoding=enc, errors='replace') as f:
-                for _ in range(max_lineas):
-                    linea = f.readline()
-                    if not linea and len(lineas) > 0:
+                for _ in range(150):
+                    line = f.readline()
+                    if not line:
                         break
-                    lineas.append(linea)
-            if any(l.strip() for l in lineas):
-                return lineas
+                    lineas_raw.append(line)
+
+            if not lineas_raw:
+                continue
+
+            separadores = [',', ';', '\t', '|']
+            max_cols_sep = {}
+
+            for s in separadores:
+                max_c = 0
+                for l in lineas_raw:
+                    if not l.strip():
+                        continue
+                    try:
+                        c = next(csv.reader([l], delimiter=s), [])
+                        if len(c) > max_c:
+                            max_c = len(c)
+                    except Exception:
+                        c = l.split(s)
+                        if len(c) > max_c:
+                            max_c = len(c)
+                max_cols_sep[s] = max_c
+
+            best_sep = max(max_cols_sep, key=max_cols_sep.get)
+            max_cols = max_cols_sep[best_sep]
+            if max_cols <= 1:
+                best_sep = ','
+
+            # Localizar el encabezado con csv.reader
+            target_header_row = None
+            header_record_index = -1
+
+            with open(filepath, 'r', encoding=enc, errors='replace') as f_obj:
+                reader = csv.reader(f_obj, delimiter=best_sep)
+                for idx, row in enumerate(reader):
+                    if idx > 150:
+                        break
+                    if len(row) >= max_cols - 1 and len(row) > 1:
+                        if es_encabezado_real(row):
+                            target_header_row = row
+                            header_record_index = idx
+                            break
+
+            if header_record_index <= 0 or not target_header_row:
+                return filepath, best_sep
+
+            # Ubicar la línea física exacta de coincidencia
+            col_1 = target_header_row[0].strip()
+            col_2 = target_header_row[1].strip() if len(target_header_row) > 1 else ""
+
+            linea_fisica_idx = -1
+            with open(filepath, 'r', encoding=enc, errors='replace') as f:
+                for l_idx, l in enumerate(f):
+                    if col_1 in l and (not col_2 or col_2 in l):
+                        linea_fisica_idx = l_idx
+                        break
+
+            if linea_fisica_idx <= 0:
+                return filepath, best_sep
+
+            # Crear archivo limpio temporal recortando los metadatos iniciales
+            temp_dir = os.path.join(os.path.dirname(filepath), "_temp_cleaned_csv")
+            os.makedirs(temp_dir, exist_ok=True)
+            clean_filename = f"clean_{os.path.basename(filepath)}"
+            clean_path = os.path.join(temp_dir, clean_filename)
+
+            with open(filepath, 'r', encoding=enc, errors='replace') as f_in:
+                for _ in range(linea_fisica_idx):
+                    f_in.readline()
+                with open(clean_path, 'w', encoding='utf-8') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+
+            return clean_path, best_sep
+
         except Exception:
             continue
-    return []
 
-
-def contar_columnas_linea(linea, sep):
-    """Cuenta columnas de forma segura omitiendo fallos por comillas no cerradas en títulos."""
-    try:
-        campos = next(csv.reader([linea], delimiter=sep), [])
-        if campos:
-            return len(campos), campos
-    except Exception:
-        pass
-    # Fallback por separación directa si csv.reader falla con comillas desparejadas
-    campos = [c.strip() for c in linea.split(sep)]
-    return len(campos), campos
-
-
-def es_fila_de_datos(campos):
-    """Evalúa si una lista de campos contiene valores con formatos típicos de registros."""
-    patron_fecha = re.compile(r'^\d{1,4}[-/\.]\d{1,2}[-/\.]\d{1,4}$')
-    patron_uuid = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}')
-    patron_monto = re.compile(r'^-?\d+[\.,]\d{2}$')
-    patron_num_largo = re.compile(r'^\d{8,}$')
-
-    coincidencias = 0
-    for c in campos:
-        val = str(c).strip()
-        if not val:
-            continue
-        if (patron_fecha.search(val) or 
-            patron_uuid.search(val) or 
-            patron_monto.search(val) or 
-            patron_num_largo.search(val)):
-            coincidencias += 1
-
-    return coincidencias >= 1
-
-
-def detectar_separador_y_encabezado(filepath, max_lineas_revision=100):
-    """Detecta el separador y el número de línea física exacto (skip_rows) de la tabla principal."""
-    lineas_fisicas = leer_lineas_fisicas(filepath, max_lineas_revision)
-    if not lineas_fisicas:
-        return 0, ','
-
-    separadores = [',', ';', '\t', '|']
-    max_cols_por_sep = {}
-
-    for s in separadores:
-        max_c = 0
-        for l in lineas_fisicas:
-            if not l.strip():
-                continue
-            n_cols, _ = contar_columnas_linea(l, s)
-            if n_cols > max_c:
-                max_c = n_cols
-        max_cols_por_sep[s] = max_c
-
-    sep_elegido = max(max_cols_por_sep, key=max_cols_por_sep.get)
-    max_cols = max_cols_por_sep[sep_elegido]
-
-    if max_cols <= 1:
-        sep_elegido = ','
-
-    # Busca la primera línea física con la cantidad máxima de columnas que sea el encabezado real
-    for idx_linea_fisica, linea in enumerate(lineas_fisicas):
-        if not linea.strip():
-            continue
-        n_cols, campos = contar_columnas_linea(linea, sep_elegido)
-        
-        if n_cols >= max_cols - 1 and n_cols > 1:
-            if not es_fila_de_datos(campos):
-                return idx_linea_fisica, sep_elegido
-            else:
-                if idx_linea_fisica > 0:
-                    return idx_linea_fisica - 1, sep_elegido
-                return idx_linea_fisica, sep_elegido
-
-    return 0, sep_elegido
+    return filepath, ','
 
 
 # ==============================================================================
@@ -296,16 +331,15 @@ class SuiteContableIntegrada:
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-        """Carga los archivos detectando automáticamente la línea física de encabezados y el delimitador."""
+        """Carga los archivos usando la versión limpia libre de metadatos iniciales."""
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
         else:
             if len(paths) == 1:
-                skip, sep = detectar_separador_y_encabezado(paths[0])
+                clean_path, sep = obtener_archivo_csv_limpio(paths[0])
                 return pl.scan_csv(
-                    paths[0], 
-                    skip_rows=skip, 
+                    clean_path, 
                     separator=sep, 
                     schema_overrides=col_dtypes,
                     ignore_errors=True,
@@ -314,10 +348,9 @@ class SuiteContableIntegrada:
             else:
                 frames = []
                 for p in paths:
-                    skip, sep = detectar_separador_y_encabezado(p)
+                    clean_path, sep = obtener_archivo_csv_limpio(p)
                     frames.append(pl.scan_csv(
-                        p, 
-                        skip_rows=skip, 
+                        clean_path, 
                         separator=sep, 
                         schema_overrides=col_dtypes,
                         ignore_errors=True,
@@ -326,7 +359,7 @@ class SuiteContableIntegrada:
                 return pl.concat(frames)
 
     def _limpiar_nombres_columnas(self, raw_cols):
-        """Garantiza que no haya nombres de columnas vacíos o invisibles en los desplegables."""
+        """Garantiza nombres válidos para los desplegables de la interfaz."""
         columnas = []
         for idx, col in enumerate(raw_cols):
             nombre = str(col).strip() if col is not None else ""
@@ -1061,7 +1094,7 @@ class SuiteContableIntegrada:
             text=(
                 "Esta pestaña se encuentra en modo de presentación (Demo).\n\n"
                 "Funcionalidades planificadas para este módulo:\n"
-                " • Análisis de Ley de Benford para detección de alteraciones de cifras.\n"
+                " • Análisis de Ley de Benford para detección de alterations de cifras.\n"
                 " • Algoritmos de muestreo estadístico (MUS, Estratificado, Aleatorio).\n"
                 " • Identificación automática de pagos fraccionados o atípicos.\n"
                 " • Generación de matriz de riesgos para dictamen fiscal."
