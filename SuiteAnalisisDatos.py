@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
 import polars as pl
+import xlsxwriter  # Importación explícita para empaquetado en aplicación portable (.exe)
 from PyPDF2 import PdfReader, PdfWriter
 import pikepdf
 
@@ -24,8 +25,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 
 # ==============================================================================
-# DETECTOR ROBUSTO DE ENCABEZADOS Y LIMPIEZA DE METADATOS CSV
+# CACHÉ Y DETECTOR ROBUSTO DE ENCABEZADOS DE ARCHIVOS
 # ==============================================================================
+
+_CLEAN_FILES_CACHE = {}
 
 def es_encabezado_real(campos):
     """Evalúa si una fila contiene nombres de columnas típicos de informes contables/fiscales."""
@@ -45,7 +48,6 @@ def es_encabezado_real(campos):
         if patron_fecha.search(val) or patron_num_largo.search(val) or patron_monto.search(val):
             coincidencias_datos += 1
 
-    # Si la fila tiene múltiples fechas o números largos de cuenta/RTN, es una fila de datos
     if coincidencias_datos >= 2:
         return False
 
@@ -64,9 +66,12 @@ def es_encabezado_real(campos):
 
 def obtener_archivo_csv_limpio(filepath):
     """
-    Identifica el encabezado real y el separador. Si el archivo contiene
-    metadatos o banners iniciales, genera una versión limpia en la carpeta temporal.
+    Identifica el encabezado real y genera una versión limpia.
+    Utiliza caché para evitar bloqueos de archivo por relecturas múltiples.
     """
+    if filepath in _CLEAN_FILES_CACHE and os.path.exists(_CLEAN_FILES_CACHE[filepath][0]):
+        return _CLEAN_FILES_CACHE[filepath]
+
     encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8']
 
     for enc in encodings:
@@ -105,7 +110,6 @@ def obtener_archivo_csv_limpio(filepath):
             if max_cols <= 1:
                 best_sep = ','
 
-            # Localizar el encabezado con csv.reader
             target_header_row = None
             header_record_index = -1
 
@@ -121,9 +125,9 @@ def obtener_archivo_csv_limpio(filepath):
                             break
 
             if header_record_index <= 0 or not target_header_row:
+                _CLEAN_FILES_CACHE[filepath] = (filepath, best_sep)
                 return filepath, best_sep
 
-            # Ubicar la línea física exacta de coincidencia
             col_1 = target_header_row[0].strip()
             col_2 = target_header_row[1].strip() if len(target_header_row) > 1 else ""
 
@@ -135,9 +139,9 @@ def obtener_archivo_csv_limpio(filepath):
                         break
 
             if linea_fisica_idx <= 0:
+                _CLEAN_FILES_CACHE[filepath] = (filepath, best_sep)
                 return filepath, best_sep
 
-            # Crear archivo limpio temporal recortando los metadatos iniciales
             temp_dir = os.path.join(os.path.dirname(filepath), "_temp_cleaned_csv")
             os.makedirs(temp_dir, exist_ok=True)
             clean_filename = f"clean_{os.path.basename(filepath)}"
@@ -149,20 +153,21 @@ def obtener_archivo_csv_limpio(filepath):
                 with open(clean_path, 'w', encoding='utf-8') as f_out:
                     shutil.copyfileobj(f_in, f_out)
 
+            _CLEAN_FILES_CACHE[filepath] = (clean_path, best_sep)
             return clean_path, best_sep
 
         except Exception:
             continue
 
+    _CLEAN_FILES_CACHE[filepath] = (filepath, ',')
     return filepath, ','
 
 
 # ==============================================================================
-# FUNCIONES AUXILIARES: GENERACIÓN DE ÍNDICES Y MARCADORES (PyMuPDF + ReportLab)
+# FUNCIONES AUXILIARES DE PDF
 # ==============================================================================
 
 def crear_pagina_indice_pdf(items, desfase_paginas, archivo_temp_indice):
-    """Genera un PDF temporal con el diseño maquetado del Índice General."""
     doc = SimpleDocTemplate(
         archivo_temp_indice,
         pagesize=letter,
@@ -204,7 +209,6 @@ def crear_pagina_indice_pdf(items, desfase_paginas, archivo_temp_indice):
 
 
 def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, desfase, log_func=print):
-    """Ensambla el índice generado, inserta enlaces interactivos y genera marcadores."""
     doc_final = pymupdf.open()
     doc_indice = pymupdf.open(pdf_indice_temp)
     doc_original = pymupdf.open(pdf_entrada)
@@ -331,7 +335,6 @@ class SuiteContableIntegrada:
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-        """Carga los archivos usando la versión limpia libre de metadatos iniciales."""
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
@@ -359,7 +362,6 @@ class SuiteContableIntegrada:
                 return pl.concat(frames)
 
     def _limpiar_nombres_columnas(self, raw_cols):
-        """Garantiza nombres válidos para los desplegables de la interfaz."""
         columnas = []
         for idx, col in enumerate(raw_cols):
             nombre = str(col).strip() if col is not None else ""
@@ -431,6 +433,7 @@ class SuiteContableIntegrada:
         if not self.paths_sep or not self.col_name_sep.get() or not self.out_dir_sep.get():
             messagebox.showwarning("Datos Incompletos", "Completa todos los campos.")
             return
+
         self.btn_process_sep.config(state=tk.DISABLED)
         self.status_sep.config(text="Procesando datos con Polars...", fg="blue")
         threading.Thread(target=self._separar_datos_thread, daemon=True).start()
@@ -441,14 +444,14 @@ class SuiteContableIntegrada:
         formato = self.format_sep.get()
         try:
             os.makedirs(carpeta_out, exist_ok=True)
-            lazy_df = self._obtener_lazy_frame(self.paths_sep, {col: pl.String})
-            cuentas = [str(c) for c in lazy_df.select(pl.col(col)).unique().collect()[col].to_list() if c is not None]
+            lazy_base = self._obtener_lazy_frame(self.paths_sep, {col: pl.String})
+            cuentas = [str(c) for c in lazy_base.select(pl.col(col)).unique().collect()[col].to_list() if c is not None]
             total = len(cuentas)
 
             for i, cuenta in enumerate(cuentas):
                 self.root.after(0, self.status_sep.config, {"text": f"Procesando ({i+1}/{total}): {cuenta}"})
                 safe_name = "".join(c for c in cuenta if c.isalnum() or c in (' ', '_', '-')).strip()
-                filtrado = self._obtener_lazy_frame(self.paths_sep, {col: pl.String}).filter(pl.col(col) == cuenta)
+                filtrado = lazy_base.filter(pl.col(col) == cuenta)
 
                 if formato == "csv":
                     filtrado.sink_csv(os.path.join(carpeta_out, f"{safe_name}.csv"))
@@ -1094,7 +1097,7 @@ class SuiteContableIntegrada:
             text=(
                 "Esta pestaña se encuentra en modo de presentación (Demo).\n\n"
                 "Funcionalidades planificadas para este módulo:\n"
-                " • Análisis de Ley de Benford para detección de alterations de cifras.\n"
+                " • Análisis de Ley de Benford para detección de alteraciones de cifras.\n"
                 " • Algoritmos de muestreo estadístico (MUS, Estratificado, Aleatorio).\n"
                 " • Identificación automática de pagos fraccionados o atípicos.\n"
                 " • Generación de matriz de riesgos para dictamen fiscal."
