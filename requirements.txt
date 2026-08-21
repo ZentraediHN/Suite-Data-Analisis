@@ -4,3 +4,4 @@ pymupdf
 reportlab
 PyPDF2
 xlsxwriter
+openpyxl
