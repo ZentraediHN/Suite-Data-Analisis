@@ -305,32 +305,45 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 # ==============================================================================
 
 def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
-    """Aplica formato dinámico según el tipo de dato de cada columna."""
+    """Aplica formato inteligente preservando tipos numéricos para Excel."""
     exprs = []
     
     for col in df.columns:
         dtype = df.schema[col]
+        col_upper = col.upper()
         
-        # A) Formatear Fechas (Remover hora, minutos y segundos -> DD/MM/YYYY)
-        if dtype in (pl.Date, pl.Datetime):
-            exprs.append(pl.col(col).dt.strftime("%d/%m/%Y").alias(col))
-            
-        # B) Formatear Enteros o identificadores (Trans #, Num, Memo)
-        elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.UInt64, pl.UInt32):
-            exprs.append(pl.col(col).cast(pl.Utf8).alias(col))
-            
-        # C) Formatear Montos Flotantes a exactamente 2 decimales
-        elif dtype in (pl.Float64, pl.Float32):
+        # A) Columnas de montos o saldos (Forzar a Numérico real)
+        if any(k in col_upper for k in ['DEBIT', 'CREDIT', 'SALDO', 'MONTO', 'IMPORTE', 'VALOR']):
             exprs.append(
-                pl.when(pl.col(col) == pl.col(col).round(0))
-                .then(pl.col(col).cast(pl.Int64).cast(pl.Utf8))
-                .otherwise(pl.col(col).round(2).cast(pl.Utf8))
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.replace_all(r"[,\$]", "") # Limpiar comas o símbolos si los hubiera
+                .cast(pl.Float64, strict=False)
+                .fill_null(0.0)
                 .alias(col)
             )
-        else:
-            # Si el texto de fecha venía como string con '00:00:00', se lo quitamos con regex
+            
+        # B) Fechas
+        elif dtype in (pl.Date, pl.Datetime) or 'FECHA' in col_upper or 'DATE' in col_upper:
             exprs.append(
-                pl.col(col).cast(pl.Utf8).str.replace(r"\s+00:00:00.*$", "").alias(col)
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.replace(r"\s+00:00:00.*$", "")
+                .alias(col)
+            )
+            
+        # C) Numéricos enteros (Trans #, etc.)
+        elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.UInt64, pl.UInt32):
+            exprs.append(pl.col(col).cast(pl.Int64, strict=False).alias(col))
+            
+        # D) Textos generales e identificadores
+        else:
+            exprs.append(
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.replace(r"\s+00:00:00.*$", "")
+                .str.replace(r"\.0$", "") # Limpiar el .0 innecesario en enteros leídos como floats
+                .alias(col)
             )
             
     return df.with_columns(exprs)
