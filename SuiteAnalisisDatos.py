@@ -27,17 +27,35 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # DETECTOR ROBUSTO DE ENCABEZADOS Y SEPARADORES CSV
 # ==============================================================================
 
+def leer_muestra_robusta(filepath, max_lineas=50):
+    """Lee líneas de muestra probando las codificaciones más comunes en reportes contables."""
+    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8', 'utf-16']
+    for enc in encodings:
+        try:
+            lineas = []
+            with open(filepath, 'r', encoding=enc, errors='replace') as f:
+                for _ in range(max_lineas):
+                    linea = f.readline()
+                    if not linea:
+                        break
+                    linea_clean = linea.replace('\x00', '').strip()
+                    if linea_clean:
+                        lineas.append(linea_clean)
+            if lineas:
+                return lineas
+        except Exception:
+            continue
+    return []
+
+
 def es_fila_de_datos(campos):
-    """
-    Evalúa si una lista de campos contiene valores típicos de DATOS
-    (fechas, UUIDs, RTN/CAI/teléfonos, montos con decimales).
-    Si contiene alguno de estos patrones, NO es un encabezado.
-    """
+    """Evalúa si una lista de campos contiene valores con formatos típicos de registros."""
     patron_fecha = re.compile(r'^\d{1,4}[-/\.]\d{1,2}[-/\.]\d{1,4}$')
     patron_uuid = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}')
     patron_monto = re.compile(r'^-?\d+[\.,]\d{2}$')
-    patron_num_largo = re.compile(r'^\d{8,}$')  # RTN, CAI, Cuenta o ID largo
+    patron_num_largo = re.compile(r'^\d{8,}$')
 
+    coincidencias = 0
     for c in campos:
         val = str(c).strip()
         if not val:
@@ -46,68 +64,64 @@ def es_fila_de_datos(campos):
             patron_uuid.search(val) or 
             patron_monto.search(val) or 
             patron_num_largo.search(val)):
-            return True
-    return False
+            coincidencias += 1
+
+    # Si más de una celda parece dato técnico, es una fila de registros
+    return coincidencias >= 1
 
 
 def detectar_separador_y_encabezado(filepath, max_lineas_revision=50):
-    """
-    Detecta automáticamente el separador (, ; \t |) y la fila del encabezado
-    real (0-indexed), descartando títulos de metadatos superiores y filas de datos.
-    """
-    separadores = [',', ';', '\t', '|']
-    lineas_muestra = []
-
-    try:
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            for _ in range(max_lineas_revision):
-                linea = f.readline()
-                if not linea:
-                    break
-                if linea.strip():
-                    lineas_muestra.append(linea)
-    except Exception:
-        return 0, ','
-
+    """Detecta separador (, ; \t |) y la fila real del encabezado descartando títulos de ERP."""
+    lineas_muestra = leer_muestra_robusta(filepath, max_lineas_revision)
     if not lineas_muestra:
         return 0, ','
 
-    # 1. Determinar el separador que genera la mayor estructura constante
-    conteo_sep = {}
+    separadores = [',', ';', '\t', '|']
+    conteo_sep = {s: 0 for s in separadores}
+
     for s in separadores:
-        conteos = [len(next(csv.reader([l], delimiter=s), [])) for l in lineas_muestra]
-        conteo_sep[s] = max(conteos) if conteos else 0
+        counts = []
+        for l in lineas_muestra:
+            try:
+                c = next(csv.reader([l], delimiter=s), [])
+                counts.append(len(c))
+            except Exception:
+                pass
+        conteo_sep[s] = max(counts) if counts else 0
 
     sep_elegido = max(conteo_sep, key=conteo_sep.get)
     if conteo_sep[sep_elegido] <= 1:
         sep_elegido = ','
 
-    # 2. Analizar estructura de las filas
     filas = []
     max_cols = 0
-
     for idx, linea in enumerate(lineas_muestra):
-        campos = next(csv.reader([linea], delimiter=sep_elegido), [])
+        try:
+            campos = next(csv.reader([linea], delimiter=sep_elegido), [])
+        except Exception:
+            campos = linea.split(sep_elegido)
+
         num_cols = len(campos)
+        non_empty = sum(1 for c in campos if str(c).strip() != '')
         if num_cols > max_cols:
             max_cols = num_cols
 
         filas.append({
             'idx': idx,
             'num_cols': num_cols,
+            'non_empty': non_empty,
             'campos': campos,
             'es_datos': es_fila_de_datos(campos)
         })
 
-    # 3. La fila del encabezado es la PRIMERA fila con el número máximo de columnas
-    #    que NO contiene valores con formato de datos
+    # El encabezado es la primera fila estructurada con múltiples columnas no vacías que no sean datos
     for f in filas:
-        if f['num_cols'] >= max_cols - 1 and not f['es_datos']:
+        if f['num_cols'] >= max_cols - 1 and f['non_empty'] > 1 and not f['es_datos']:
             return f['idx'], sep_elegido
 
-    # 4. Fallback en caso de archivos sin metadata
+    # Fallback a la primera fila estructurada de más de 1 columna
     for f in filas:
-        if f['num_cols'] >= max_cols - 1 and f['num_cols'] > 1:
+        if f['non_empty'] > 1:
             return f['idx'], sep_elegido
 
     return 0, sep_elegido
@@ -197,7 +211,7 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
         if encontrado:
             log_func(f"     ✔ Vinculado: '{titulo}' ➔ Pág. destino {pag_destino}")
         else:
-            log_func(f"     ⚠️ No se pudo vincular visualmente: '{titulo}'")
+            log_func(f"     ⚠️ No se pudo vincula visualmente: '{titulo}'")
             
         toc.append([1, titulo, pag_destino])
 
@@ -224,74 +238,52 @@ class SuiteContableIntegrada:
         self.root.geometry("780x780")
         self.root.minsize(700, 680)
 
-        # --- Variables de Estado: CSV / Parquet ---
         self.paths_sep = []
         self.paths_res = []
         self.paths_conv = []
 
-        # --- Variables de Estado: PDF Splitter ---
         self.pdf_path = tk.StringVar()
         self.output_dir_pdf = tk.StringVar()
         self.max_size_mb = tk.DoubleVar(value=14.0)
         self.export_mode_pdf = tk.StringVar(value="both")
         self.is_processing_pdf = False
 
-        # --- Variables de Estado: PDF Indexer & Bookmarks ---
         self.idx_pdf_entrada = tk.StringVar()
         self.idx_txt_indice = tk.StringVar()
         self.idx_pdf_salida = tk.StringVar()
         self.is_processing_idx = False
 
-        # Construcción de la Interfaz Superior y Pestañas
         self._build_top_menu()
         self._build_main_ui()
 
-    # ==========================================
-    # BARRA DE MENÚ SUPERIOR
-    # ==========================================
     def _build_top_menu(self):
         self.menubar = tk.Menu(self.root)
-
-        # Menú Archivo
         self.menu_archivo = tk.Menu(self.menubar, tearoff=0)
         self.menu_archivo.add_command(label="Salir", command=self.salir_aplicacion, accelerator="Alt+F4")
-        
         self.menubar.add_cascade(label="Archivo", menu=self.menu_archivo)
         self.root.config(menu=self.menubar)
 
     def salir_aplicacion(self):
-        """Cierra de forma limpia la aplicación."""
         if messagebox.askokcancel("Salir", "¿Deseas cerrar la suite?"):
             self.root.destroy()
 
-    # ==========================================
-    # UI PRINCIPAL Y PESTAÑAS
-    # ==========================================
     def _build_main_ui(self):
-        # Notebook Principal (Pestañas de Nivel Superior)
         self.main_notebook = ttk.Notebook(self.root)
         self.main_notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Pestaña 1: CSV y Parquet
         self.tab_csv_main = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.tab_csv_main, text=" ⚡ Motor de Datos (Big Data) ")
 
-        # Pestaña 2: PDFs
         self.tab_pdf_main = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.tab_pdf_main, text=" 🛠️ PDF Studio ")
 
-        # Pestaña 3: Análisis de Riesgo y Muestreo (Demo / Presentación)
         self.tab_riesgo_main = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.tab_riesgo_main, text=" 🛡️ Análisis de Riesgo y Muestreo ")
 
-        # Configurar Subpestañas y Vistas
         self._build_csv_subnotebook()
         self._build_pdf_subnotebook()
         self._build_riesgo_demo_ui()
 
-    # ==========================================
-    # SUBPESTAÑAS CSV / PARQUET
-    # ==========================================
     def _build_csv_subnotebook(self):
         self.csv_notebook = ttk.Notebook(self.tab_csv_main)
         self.csv_notebook.pack(fill="both", expand=True, padx=5, pady=5)
@@ -309,7 +301,7 @@ class SuiteContableIntegrada:
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-        """Carga los archivos detectando automáticamente el delimitador y omitiendo metadatos."""
+        """Carga los archivos detectando automáticamente el delimitador y la codificación."""
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
@@ -321,7 +313,8 @@ class SuiteContableIntegrada:
                     skip_rows=skip, 
                     separator=sep, 
                     schema_overrides=col_dtypes,
-                    ignore_errors=True
+                    ignore_errors=True,
+                    encoding="utf-8-lossy"
                 )
             else:
                 frames = []
@@ -332,9 +325,20 @@ class SuiteContableIntegrada:
                         skip_rows=skip, 
                         separator=sep, 
                         schema_overrides=col_dtypes,
-                        ignore_errors=True
+                        ignore_errors=True,
+                        encoding="utf-8-lossy"
                     ))
                 return pl.concat(frames)
+
+    def _limpiar_nombres_columnas(self, raw_cols):
+        """Garantiza que no haya nombres de columnas vacíos o invisibles en los desplegables."""
+        columnas = []
+        for idx, col in enumerate(raw_cols):
+            nombre = str(col).strip() if col is not None else ""
+            if not nombre or nombre.startswith("_duplicated"):
+                nombre = f"Columna_{idx+1}"
+            columnas.append(nombre)
+        return columnas
 
     def setup_ui_separador(self):
         self.file_display_sep = tk.StringVar()
@@ -380,7 +384,9 @@ class SuiteContableIntegrada:
 
             try:
                 lazy_df = self._obtener_lazy_frame(self.paths_sep)
-                columnas = lazy_df.collect_schema().names()
+                raw_cols = lazy_df.collect_schema().names()
+                columnas = self._limpiar_nombres_columnas(raw_cols)
+                
                 self.combo_col_sep['values'] = columnas
                 if columnas:
                     self.combo_col_sep.current(0)
@@ -483,7 +489,9 @@ class SuiteContableIntegrada:
 
             try:
                 lazy_df = self._obtener_lazy_frame(self.paths_res)
-                columnas = lazy_df.collect_schema().names()
+                raw_cols = lazy_df.collect_schema().names()
+                columnas = self._limpiar_nombres_columnas(raw_cols)
+
                 self.combo_col_res['values'] = columnas
                 if columnas:
                     self.combo_col_res.current(0)
@@ -616,7 +624,6 @@ class SuiteContableIntegrada:
         self.setup_ui_pdf_divisor()
         self.setup_ui_pdf_indice()
 
-    # --- SUBPESTAÑA PDF 1: DIVISOR DE PDFS ---
     def setup_ui_pdf_divisor(self):
         file_frame = ttk.LabelFrame(self.tab_pdf_divisor, text=" Archivo PDF de Entrada ", padding=10)
         file_frame.pack(fill="x", padx=15, pady=5)
@@ -886,7 +893,6 @@ class SuiteContableIntegrada:
             self.is_processing_pdf = False
             self.root.after(0, lambda: self.btn_process_pdf.config(state="normal"))
 
-    # --- SUBPESTAÑA PDF 2: GENERADOR DE ÍNDICES Y MARCADORES ---
     def setup_ui_pdf_indice(self):
         frame_inputs = ttk.LabelFrame(self.tab_pdf_indice, text=" Configuración de Archivos ", padding=10)
         frame_inputs.pack(fill="x", padx=15, pady=5)
@@ -1044,9 +1050,6 @@ class SuiteContableIntegrada:
             self.is_processing_idx = False
             self.root.after(0, lambda: self.btn_process_idx.config(state="normal"))
 
-    # ==========================================
-    # PESTAÑA PRINCIPAL 3: ANÁLISIS DE RIESGO Y MUESTREO (DEMO)
-    # ==========================================
     def _build_riesgo_demo_ui(self):
         f_card = ttk.LabelFrame(self.tab_riesgo_main, text=" Módulo de Análisis de Riesgo Fiscal y Muestreo ", padding=20)
         f_card.pack(fill="both", expand=True, padx=20, pady=20)
