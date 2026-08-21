@@ -27,8 +27,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # DETECTOR ROBUSTO DE ENCABEZADOS Y SEPARADORES CSV
 # ==============================================================================
 
-def leer_muestra_robusta(filepath, max_lineas=50):
-    """Lee líneas de muestra probando las codificaciones más comunes en reportes contables."""
+def leer_lineas_fisicas(filepath, max_lineas=100):
+    """Lee líneas físicas manteniendo exactitud del índice de filas para skip_rows."""
     encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8', 'utf-16']
     for enc in encodings:
         try:
@@ -36,16 +36,27 @@ def leer_muestra_robusta(filepath, max_lineas=50):
             with open(filepath, 'r', encoding=enc, errors='replace') as f:
                 for _ in range(max_lineas):
                     linea = f.readline()
-                    if not linea:
+                    if not linea and len(lineas) > 0:
                         break
-                    linea_clean = linea.replace('\x00', '').strip()
-                    if linea_clean:
-                        lineas.append(linea_clean)
-            if lineas:
+                    lineas.append(linea)
+            if any(l.strip() for l in lineas):
                 return lineas
         except Exception:
             continue
     return []
+
+
+def contar_columnas_linea(linea, sep):
+    """Cuenta columnas de forma segura omitiendo fallos por comillas no cerradas en títulos."""
+    try:
+        campos = next(csv.reader([linea], delimiter=sep), [])
+        if campos:
+            return len(campos), campos
+    except Exception:
+        pass
+    # Fallback por separación directa si csv.reader falla con comillas desparejadas
+    campos = [c.strip() for c in linea.split(sep)]
+    return len(campos), campos
 
 
 def es_fila_de_datos(campos):
@@ -69,57 +80,44 @@ def es_fila_de_datos(campos):
     return coincidencias >= 1
 
 
-def detectar_separador_y_encabezado(filepath, max_lineas_revision=50):
-    """Detecta separador (, ; \t |) y la fila real del encabezado descartando títulos de ERP."""
-    lineas_muestra = leer_muestra_robusta(filepath, max_lineas_revision)
-    if not lineas_muestra:
+def detectar_separador_y_encabezado(filepath, max_lineas_revision=100):
+    """Detecta el separador y el número de línea física exacto (skip_rows) de la tabla principal."""
+    lineas_fisicas = leer_lineas_fisicas(filepath, max_lineas_revision)
+    if not lineas_fisicas:
         return 0, ','
 
     separadores = [',', ';', '\t', '|']
-    conteo_sep = {s: 0 for s in separadores}
+    max_cols_por_sep = {}
 
     for s in separadores:
-        counts = []
-        for l in lineas_muestra:
-            try:
-                c = next(csv.reader([l], delimiter=s), [])
-                counts.append(len(c))
-            except Exception:
-                pass
-        conteo_sep[s] = max(counts) if counts else 0
+        max_c = 0
+        for l in lineas_fisicas:
+            if not l.strip():
+                continue
+            n_cols, _ = contar_columnas_linea(l, s)
+            if n_cols > max_c:
+                max_c = n_cols
+        max_cols_por_sep[s] = max_c
 
-    sep_elegido = max(conteo_sep, key=conteo_sep.get)
-    if conteo_sep[sep_elegido] <= 1:
+    sep_elegido = max(max_cols_por_sep, key=max_cols_por_sep.get)
+    max_cols = max_cols_por_sep[sep_elegido]
+
+    if max_cols <= 1:
         sep_elegido = ','
 
-    filas = []
-    max_cols = 0
-    for idx, linea in enumerate(lineas_muestra):
-        try:
-            campos = next(csv.reader([linea], delimiter=sep_elegido), [])
-        except Exception:
-            campos = linea.split(sep_elegido)
-
-        num_cols = len(campos)
-        non_empty = sum(1 for c in campos if str(c).strip() != '')
-        if num_cols > max_cols:
-            max_cols = num_cols
-
-        filas.append({
-            'idx': idx,
-            'num_cols': num_cols,
-            'non_empty': non_empty,
-            'campos': campos,
-            'es_datos': es_fila_de_datos(campos)
-        })
-
-    for f in filas:
-        if f['num_cols'] >= max_cols - 1 and f['non_empty'] > 1 and not f['es_datos']:
-            return f['idx'], sep_elegido
-
-    for f in filas:
-        if f['non_empty'] > 1:
-            return f['idx'], sep_elegido
+    # Busca la primera línea física con la cantidad máxima de columnas que sea el encabezado real
+    for idx_linea_fisica, linea in enumerate(lineas_fisicas):
+        if not linea.strip():
+            continue
+        n_cols, campos = contar_columnas_linea(linea, sep_elegido)
+        
+        if n_cols >= max_cols - 1 and n_cols > 1:
+            if not es_fila_de_datos(campos):
+                return idx_linea_fisica, sep_elegido
+            else:
+                if idx_linea_fisica > 0:
+                    return idx_linea_fisica - 1, sep_elegido
+                return idx_linea_fisica, sep_elegido
 
     return 0, sep_elegido
 
@@ -298,7 +296,7 @@ class SuiteContableIntegrada:
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-        """Carga los archivos detectando automáticamente el delimitador y la codificación."""
+        """Carga los archivos detectando automáticamente la línea física de encabezados y el delimitador."""
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
