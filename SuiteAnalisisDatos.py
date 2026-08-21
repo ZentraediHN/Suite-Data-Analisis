@@ -8,6 +8,7 @@ import zipfile
 import ctypes
 import threading
 import csv
+import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
@@ -23,95 +24,93 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 
 # ==============================================================================
-# DETECTOR AUTOMÁTICO DE ENCABEZADOS CSV
+# DETECTOR ROBUSTO DE ENCABEZADOS Y SEPARADORES CSV
 # ==============================================================================
 
-def es_probable_encabezado(campos):
+def es_fila_de_datos(campos):
     """
-    Evalúa si una lista de campos parece ser un encabezado
-    (predominio de texto sobre números/fechas).
+    Evalúa si una lista de campos contiene valores típicos de DATOS
+    (fechas, UUIDs, RTN/CAI/teléfonos, montos con decimales).
+    Si contiene alguno de estos patrones, NO es un encabezado.
     """
-    if not campos or len(campos) <= 1:
-        return False
-
-    textos = 0
-    numeros_o_fechas = 0
+    patron_fecha = re.compile(r'^\d{1,4}[-/\.]\d{1,2}[-/\.]\d{1,4}$')
+    patron_uuid = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}')
+    patron_monto = re.compile(r'^-?\d+[\.,]\d{2}$')
+    patron_num_largo = re.compile(r'^\d{8,}$')  # RTN, CAI, Cuenta o ID largo
 
     for c in campos:
-        c_str = str(c).strip()
-        if not c_str:
+        val = str(c).strip()
+        if not val:
             continue
-
-        # Detectar si el campo es un número decimal o entero
-        try:
-            float(c_str.replace(',', '.'))
-            numeros_o_fechas += 1
-            continue
-        except ValueError:
-            pass
-
-        # Detectar si el campo es una fecha (ej. 19/3/2023 o 2023-03-19)
-        if ('/' in c_str or '-' in c_str) and any(char.isdigit() for char in c_str):
-            numeros_o_fechas += 1
-            continue
-
-        textos += 1
-
-    total = textos + numeros_o_fechas
-    if total == 0:
-        return False
-
-    # Es encabezado si más del 60% de los campos son nombres en texto
-    return (textos / total) > 0.6
+        if (patron_fecha.search(val) or 
+            patron_uuid.search(val) or 
+            patron_monto.search(val) or 
+            patron_num_largo.search(val)):
+            return True
+    return False
 
 
-def detectar_linea_encabezado_csv(filepath, max_lineas_revision=50):
+def detectar_separador_y_encabezado(filepath, max_lineas_revision=50):
     """
-    Encuentra la fila (0-indexed) del encabezado real buscando la estructura
-    con mayor número de columnas que contenga etiquetas de texto y descartando
-    filas de metadatos o títulos intermedios.
+    Detecta automáticamente el separador (, ; \t |) y la fila del encabezado
+    real (0-indexed), descartando títulos de metadatos superiores y filas de datos.
     """
-    filas = []
+    separadores = [',', ';', '\t', '|']
+    lineas_muestra = []
+
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            for idx in range(max_lineas_revision):
+            for _ in range(max_lineas_revision):
                 linea = f.readline()
                 if not linea:
                     break
-
-                # Detecta separador (coma o punto y coma)
-                sep = ';' if ';' in linea and linea.count(';') > linea.count(',') else ','
-                campos = next(csv.reader([linea], delimiter=sep), [])
-                
-                # Contar campos que no estén totalmente vacíos
-                campos_validos = [c for c in campos if c.strip() != '']
-                num_campos = len(campos_validos)
-
-                filas.append({
-                    'idx': idx,
-                    'num_cols': num_campos,
-                    'campos': campos,
-                    'es_encabezado': es_probable_encabezado(campos_validos)
-                })
-
-        # 1. Filtrar solo las filas clasificadas como 'encabezado de texto'
-        candidatas = [f for f in filas if f['es_encabezado']]
-
-        if candidatas:
-            # Elegir la que tenga el MÁXIMO número de columnas
-            mejor_encabezado = max(candidatas, key=lambda x: x['num_cols'])
-            return mejor_encabezado['idx']
-
-        # 2. Si falla la detección de texto, tomar la primera fila con mayor número de columnas
-        max_cols = max(f['num_cols'] for f in filas) if filas else 0
-        for f in filas:
-            if f['num_cols'] == max_cols and max_cols > 1:
-                return f['idx']
-
+                if linea.strip():
+                    lineas_muestra.append(linea)
     except Exception:
-        pass
+        return 0, ','
 
-    return 0
+    if not lineas_muestra:
+        return 0, ','
+
+    # 1. Determinar el separador que genera la mayor estructura constante
+    conteo_sep = {}
+    for s in separadores:
+        conteos = [len(next(csv.reader([l], delimiter=s), [])) for l in lineas_muestra]
+        conteo_sep[s] = max(conteos) if conteos else 0
+
+    sep_elegido = max(conteo_sep, key=conteo_sep.get)
+    if conteo_sep[sep_elegido] <= 1:
+        sep_elegido = ','
+
+    # 2. Analizar estructura de las filas
+    filas = []
+    max_cols = 0
+
+    for idx, linea in enumerate(lineas_muestra):
+        campos = next(csv.reader([linea], delimiter=sep_elegido), [])
+        num_cols = len(campos)
+        if num_cols > max_cols:
+            max_cols = num_cols
+
+        filas.append({
+            'idx': idx,
+            'num_cols': num_cols,
+            'campos': campos,
+            'es_datos': es_fila_de_datos(campos)
+        })
+
+    # 3. La fila del encabezado es la PRIMERA fila con el número máximo de columnas
+    #    que NO contiene valores con formato de datos
+    for f in filas:
+        if f['num_cols'] >= max_cols - 1 and not f['es_datos']:
+            return f['idx'], sep_elegido
+
+    # 4. Fallback en caso de archivos sin metadata
+    for f in filas:
+        if f['num_cols'] >= max_cols - 1 and f['num_cols'] > 1:
+            return f['idx'], sep_elegido
+
+    return 0, sep_elegido
 
 
 # ==============================================================================
@@ -310,19 +309,31 @@ class SuiteContableIntegrada:
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-        """Carga los archivos omitiendo automáticamente los metadatos iniciales."""
+        """Carga los archivos detectando automáticamente el delimitador y omitiendo metadatos."""
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             return pl.scan_parquet(paths)
         else:
             if len(paths) == 1:
-                skip = detectar_linea_encabezado_csv(paths[0])
-                return pl.scan_csv(paths[0], skip_rows=skip, schema_overrides=col_dtypes)
+                skip, sep = detectar_separador_y_encabezado(paths[0])
+                return pl.scan_csv(
+                    paths[0], 
+                    skip_rows=skip, 
+                    separator=sep, 
+                    schema_overrides=col_dtypes,
+                    ignore_errors=True
+                )
             else:
                 frames = []
                 for p in paths:
-                    skip = detectar_linea_encabezado_csv(p)
-                    frames.append(pl.scan_csv(p, skip_rows=skip, schema_overrides=col_dtypes))
+                    skip, sep = detectar_separador_y_encabezado(p)
+                    frames.append(pl.scan_csv(
+                        p, 
+                        skip_rows=skip, 
+                        separator=sep, 
+                        schema_overrides=col_dtypes,
+                        ignore_errors=True
+                    ))
                 return pl.concat(frames)
 
     def setup_ui_separador(self):
