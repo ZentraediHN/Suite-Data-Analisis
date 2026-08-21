@@ -3,3 +3,4 @@ pikepdf
 pymupdf
 reportlab
 PyPDF2
+xlsxwriter
