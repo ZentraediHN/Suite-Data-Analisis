@@ -66,7 +66,6 @@ def es_fila_de_datos(campos):
             patron_num_largo.search(val)):
             coincidencias += 1
 
-    # Si más de una celda parece dato técnico, es una fila de registros
     return coincidencias >= 1
 
 
@@ -114,12 +113,10 @@ def detectar_separador_y_encabezado(filepath, max_lineas_revision=50):
             'es_datos': es_fila_de_datos(campos)
         })
 
-    # El encabezado es la primera fila estructurada con múltiples columnas no vacías que no sean datos
     for f in filas:
         if f['num_cols'] >= max_cols - 1 and f['non_empty'] > 1 and not f['es_datos']:
             return f['idx'], sep_elegido
 
-    # Fallback a la primera fila estructurada de más de 1 columna
     for f in filas:
         if f['non_empty'] > 1:
             return f['idx'], sep_elegido
@@ -211,7 +208,7 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
         if encontrado:
             log_func(f"     ✔ Vinculado: '{titulo}' ➔ Pág. destino {pag_destino}")
         else:
-            log_func(f"     ⚠️ No se pudo vincula visualmente: '{titulo}'")
+            log_func(f"     ⚠️ No se pudo vincular visualmente: '{titulo}'")
             
         toc.append([1, titulo, pag_destino])
 
@@ -314,7 +311,7 @@ class SuiteContableIntegrada:
                     separator=sep, 
                     schema_overrides=col_dtypes,
                     ignore_errors=True,
-                    encoding="utf-8-lossy"
+                    encoding="utf8-lossy"
                 )
             else:
                 frames = []
@@ -326,7 +323,7 @@ class SuiteContableIntegrada:
                         separator=sep, 
                         schema_overrides=col_dtypes,
                         ignore_errors=True,
-                        encoding="utf-8-lossy"
+                        encoding="utf8-lossy"
                     ))
                 return pl.concat(frames)
 
