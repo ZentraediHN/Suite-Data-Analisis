@@ -56,7 +56,7 @@ def es_encabezado_real(campos):
         'RTN', 'NOMBRE', 'DECLARACION', 'FECHA', 'CAI', 'ESTADO', 
         'ESTABLECIMIENTO', 'PUNTO', 'TIPO', 'CORRELATIVO', 'IMPORTE', 
         'IMPUESTO', 'NUMERO', 'CODIGO', 'CUENTA', 'DESCRIPCION', 'MONTO',
-        'SALDO', 'DEBE', 'HABER', 'DOCUMENTO', 'VALOR'
+        'SALDO', 'DEBE', 'HABER', 'DOCUMENTO', 'VALOR', 'ACCOUNT', 'TRANS', 'DEBIT', 'CREDIT'
     ]
 
     texto_unido = " ".join(textos)
@@ -487,13 +487,38 @@ class SuiteContableIntegrada:
         try:
             os.makedirs(carpeta_out, exist_ok=True)
             lazy_base = self._obtener_lazy_frame(self.paths_sep, {col: pl.String})
-            cuentas = [str(c) for c in lazy_base.select(pl.col(col)).unique().collect()[col].to_list() if c is not None]
+
+            # --- PIPELINE DE LIMPIEZA DINÁMICO Y RELLENO CON POLARS ---
+            lazy_procesado = (
+                lazy_base
+                .with_columns(
+                    # 1. Limpiar espacios y normalizar celdas vacías
+                    pl.col(col)
+                    .cast(pl.Utf8)
+                    .str.strip_chars()
+                    .replace("", None)
+                )
+                # 2. Descartar filas con cualquier variación de la palabra 'total'
+                .filter(
+                    ~pl.col(col).str.contains(r"(?i)\btotal\b").fill_null(False)
+                )
+                # 3. Propagar la cuenta hacia abajo (Forward Fill)
+                .with_columns(
+                    pl.col(col).forward_fill()
+                )
+                # 4. Eliminar filas no asignadas
+                .filter(pl.col(col).is_not_null())
+            )
+
+            # Obtener el catálogo único de cuentas resultantes
+            df_cuentas = lazy_procesado.select(pl.col(col)).unique().collect()
+            cuentas = [str(c) for c in df_cuentas[col].to_list() if c is not None]
             total = len(cuentas)
 
             for i, cuenta in enumerate(cuentas):
                 self.root.after(0, self.status_sep.config, {"text": f"Procesando ({i+1}/{total}): {cuenta}"})
                 safe_name = "".join(c for c in cuenta if c.isalnum() or c in (' ', '_', '-')).strip()
-                filtrado = lazy_base.filter(pl.col(col) == cuenta)
+                filtrado = lazy_procesado.filter(pl.col(col) == cuenta)
 
                 if formato == "csv":
                     filtrado.sink_csv(os.path.join(carpeta_out, f"{safe_name}.csv"))
@@ -603,7 +628,19 @@ class SuiteContableIntegrada:
 
         try:
             exprs = [pl.col(c).cast(pl.Float64, strict=False).fill_null(0.0).sum().alias(c) for c in cols_sumar]
-            lazy_df = self._obtener_lazy_frame(self.paths_res, {col_agrupar: pl.String})
+            lazy_base = self._obtener_lazy_frame(self.paths_res, {col_agrupar: pl.String})
+
+            # Normalizar y rellenar vacíos antes de agrupar
+            lazy_df = (
+                lazy_base
+                .with_columns(
+                    pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
+                )
+                .filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
+                .with_columns(pl.col(col_agrupar).forward_fill())
+                .filter(pl.col(col_agrupar).is_not_null())
+            )
+
             df_resumen = lazy_df.group_by(col_agrupar).agg(exprs).sort(col_agrupar).collect()
 
             if formato == "csv":
