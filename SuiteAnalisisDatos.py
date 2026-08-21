@@ -301,6 +301,42 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 
 
 # ==============================================================================
+# FUNCIÓN DE FORMATEO DINÁMICO DE COLUMNAS
+# ==============================================================================
+
+def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
+    """Aplica formato dinámico según el tipo de dato de cada columna."""
+    exprs = []
+    
+    for col in df.columns:
+        dtype = df.schema[col]
+        
+        # A) Formatear Fechas (Remover hora, minutos y segundos -> DD/MM/YYYY)
+        if dtype in (pl.Date, pl.Datetime):
+            exprs.append(pl.col(col).dt.strftime("%d/%m/%Y").alias(col))
+            
+        # B) Formatear Enteros o identificadores (Trans #, Num, Memo)
+        elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.UInt64, pl.UInt32):
+            exprs.append(pl.col(col).cast(pl.Utf8).alias(col))
+            
+        # C) Formatear Montos Flotantes a exactamente 2 decimales
+        elif dtype in (pl.Float64, pl.Float32):
+            exprs.append(
+                pl.when(pl.col(col) == pl.col(col).round(0))
+                .then(pl.col(col).cast(pl.Int64).cast(pl.Utf8))
+                .otherwise(pl.col(col).round(2).cast(pl.Utf8))
+                .alias(col)
+            )
+        else:
+            # Si el texto de fecha venía como string con '00:00:00', se lo quitamos con regex
+            exprs.append(
+                pl.col(col).cast(pl.Utf8).str.replace(r"\s+00:00:00.*$", "").alias(col)
+            )
+            
+    return df.with_columns(exprs)
+
+
+# ==============================================================================
 # CLASE PRINCIPAL DE LA SUITE
 # ==============================================================================
 
@@ -518,14 +554,18 @@ class SuiteContableIntegrada:
             for i, cuenta in enumerate(cuentas):
                 self.root.after(0, self.status_sep.config, {"text": f"Procesando ({i+1}/{total}): {cuenta}"})
                 safe_name = "".join(c for c in cuenta if c.isalnum() or c in (' ', '_', '-')).strip()
-                filtrado = lazy_procesado.filter(pl.col(col) == cuenta)
+                
+                # Recolectar datos de la cuenta y aplicar la limpieza de formatos
+                df_grupo = lazy_procesado.filter(pl.col(col) == cuenta).collect()
+                df_limpio = aplicar_formato_limpio(df_grupo)
 
+                # Exportar según el formato seleccionado
                 if formato == "csv":
-                    filtrado.sink_csv(os.path.join(carpeta_out, f"{safe_name}.csv"))
+                    df_limpio.write_csv(os.path.join(carpeta_out, f"{safe_name}.csv"))
                 elif formato == "parquet":
-                    filtrado.sink_parquet(os.path.join(carpeta_out, f"{safe_name}.parquet"))
+                    df_limpio.write_parquet(os.path.join(carpeta_out, f"{safe_name}.parquet"))
                 else:
-                    filtrado.collect().write_excel(os.path.join(carpeta_out, f"{safe_name}.xlsx"))
+                    df_limpio.write_excel(os.path.join(carpeta_out, f"{safe_name}.xlsx"))
 
             self.root.after(0, self.status_sep.config, {"text": "✅ Proceso finalizado.", "fg": "green"})
             self.root.after(0, messagebox.showinfo, "Éxito", f"Archivos exportados en:\n{carpeta_out}")
