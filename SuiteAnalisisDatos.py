@@ -445,34 +445,43 @@ class SuiteContableIntegrada:
         self.setup_ui_convertidor()
 
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-        if not paths:
-            return None
-
-        ext = os.path.splitext(paths[0])[1].lower()
-        if ext == ".parquet":
-            return pl.scan_parquet(paths)
-        else:
-            if len(paths) == 1:
-                clean_path, sep = obtener_archivo_limpio(paths[0])
-                return pl.scan_csv(
-                    clean_path, 
-                    separator=sep, 
-                    schema_overrides=col_dtypes,
-                    ignore_errors=True,
-                    encoding="utf8-lossy"
-                )
+            if not paths:
+                return None
+    
+            ext = os.path.splitext(paths[0])[1].lower()
+            if ext == ".parquet":
+                lf = pl.scan_parquet(paths)
+                cols_originales = lf.collect_schema().names()
+                cols_limpias = {c: c.strip() for c in cols_originales}
+                return lf.rename(cols_limpias)
             else:
-                frames = []
-                for p in paths:
-                    clean_path, sep = obtener_archivo_limpio(p)
-                    frames.append(pl.scan_csv(
+                if len(paths) == 1:
+                    clean_path, sep = obtener_archivo_limpio(paths[0])
+                    lf = pl.scan_csv(
                         clean_path, 
                         separator=sep, 
                         schema_overrides=col_dtypes,
                         ignore_errors=True,
                         encoding="utf8-lossy"
-                    ))
-                return pl.concat(frames)
+                    )
+                    cols_originales = lf.collect_schema().names()
+                    cols_limpias = {c: c.strip() for c in cols_originales}
+                    return lf.rename(cols_limpias)
+                else:
+                    frames = []
+                    for p in paths:
+                        clean_path, sep = obtener_archivo_limpio(p)
+                        lf = pl.scan_csv(
+                            clean_path, 
+                            separator=sep, 
+                            schema_overrides=col_dtypes,
+                            ignore_errors=True,
+                            encoding="utf8-lossy"
+                        )
+                        cols_originales = lf.collect_schema().names()
+                        cols_limpias = {c: c.strip() for c in cols_originales}
+                        frames.append(lf.rename(cols_limpias))
+                    return pl.concat(frames)
 
     def _limpiar_nombres_columnas(self, raw_cols):
         columnas = []
