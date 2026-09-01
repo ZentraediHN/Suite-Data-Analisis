@@ -321,90 +321,70 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 
 
 # ==============================================================================
-# FUNCIÓN DE FORMATEO DINÁMICO DE COLUMNAS
+# FUNCIÓN DE FORMATEO Y SANEAMIENTO UNIVERSAL DE COLUMNAS (AGNÓSTICA)
 # ==============================================================================
 
 def es_columna_numerica_disfrazada(s: pl.Series, muestra_n: int = 100) -> bool:
     """
     Evalúa si una columna de texto contiene principalmente valores numéricos
-    después de remover símbolos de moneda (L, $, etc.), comas y espacios.
+    después de remover comas de miles, comillas, espacios y símbolos monetarios.
     """
-    # Tomar valores no nulos y no vacíos
     validos = s.filter(s.is_not_null() & (s.str.strip_chars() != "")).head(muestra_n)
     if len(validos) == 0:
         return False
 
-    # Regex que remueve comas, espacios y letras/símbolos monetarios comunes
-    # Conserva dígitos, puntos decimales y el signo negativo
-    limpios = validos.str.replace_all(r"[^\d.-]", "")
+    # Quitamos comas de miles, comillas, espacios y caracteres no numéricos comunes
+    limpios = validos.str.replace_all(r'[,\s"]', "").str.replace_all(r"[^\d.-]", "")
     
-    # Expresión regular para validar formato flotante o entero válido
-    # Acepta: "123.45", "-123.45", "100"
+    # Expresión regular que valida formato numérico (enteros o decimales)
     patron_numero = r"^-?\d+(\.\d+)?$"
-    
-    # Contar cuántos elementos de la muestra se convierten en números válidos
     coincidencias = limpios.str.contains(patron_numero).sum()
     
-    # Si más del 70% de la muestra son números, consideramos la columna numérica
-    return (coincidencias / len(validos)) >= 0.7
+    # Si al menos el 60% de la muestra son números, la columna se considera numérica
+    return (coincidencias / len(validos)) >= 0.6
 
 
 def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Normaliza y limpia los datos de forma agnóstica a los nombres de columnas,
-    detectando números por tipo nativo o por evaluación del contenido (símbolos monetarios).
+    Normaliza y limpia cualquier DataFrame de forma 100% agnóstica a los 
+    nombres de columnas o al origen del archivo.
     """
     exprs = []
     
     for col in df.columns:
         dtype = df.schema[col]
-        col_upper = col.upper()
         
         # 1. Numéricos declarados nativamente (Floats)
         if dtype in (pl.Float64, pl.Float32):
             exprs.append(
-                pl.col(col)
-                .fill_null(0.0)
-                .round(4)
-                .alias(col)
+                pl.col(col).fill_null(0.0).round(4).alias(col)
             )
             
         # 2. Enteros declarados nativamente
         elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.Int8, pl.UInt64, pl.UInt32, pl.UInt16, pl.UInt8):
             exprs.append(
-                pl.col(col)
-                .fill_null(0)
-                .alias(col)
+                pl.col(col).fill_null(0).alias(col)
             )
             
-        # 3. Fechas
-        elif dtype in (pl.Date, pl.Datetime) or 'FECHA' in col_upper or 'DATE' in col_upper:
-            exprs.append(
-                pl.col(col)
-                .cast(pl.Utf8)
-                .str.replace(r"\s+00:00:00.*$", "")
-                .str.strip_chars()
-                .alias(col)
-            )
-            
-        # 4. Cadenas de texto (evaluar si son montos con símbolos monetarios o texto puro)
+        # 3. Columnas tipo Texto / Cadenas (Evalúa si son números entrecomillados o con comas)
         else:
             serie_col = df[col]
             
             if es_columna_numerica_disfrazada(serie_col):
-                # Limpieza de símbolos de moneda, comas y guiones de cero ("L  -", "-", etc.)
+                # Elimina comas de miles, comillas dobles, espacios y símbolos monetarios
                 exprs.append(
                     pl.col(col)
                     .cast(pl.Utf8)
-                    .str.replace_all(r"[^\d.-]", "")  # Elimina 'L', '$', comas, espacios
+                    .str.replace_all(r'[,\s"]', "")       # Remueve comas de miles y comillas
+                    .str.replace_all(r"[^\d.-]", "")      # Remueve otros caracteres no numéricos
                     .replace("", None)
-                    .cast(pl.Float64, strict=False)
+                    .cast(pl.Float64, strict=False)       # Casteo seguro a Float64
                     .fill_null(0.0)
                     .round(4)
                     .alias(col)
                 )
             else:
-                # Texto general (Nombres, Cuentas, Conceptos, Memos)
+                # Texto general de la tabla (Nombres, CAI, RTN, Conceptos)
                 exprs.append(
                     pl.col(col)
                     .cast(pl.Utf8)
@@ -779,47 +759,56 @@ class SuiteContableIntegrada:
         self.btn_process_res.config(state=tk.DISABLED)
         self.status_res.config(text="Generando resumen con Polars...", fg="blue")
         threading.Thread(target=self._generar_resumen_thread, daemon=True).start()
-
+    
     def _generar_resumen_thread(self):
-        col_agrupar = self.col_group_res.get()
-        indices_vals = self.listbox_vals.curselection()
-        cols_sumar = [self.listbox_vals.get(i) for i in indices_vals]
-        archivo_out = self.out_file_res.get()
-        formato = self.format_res.get()
-
-        try:
-            exprs = [pl.col(c).cast(pl.Float64, strict=False).fill_null(0.0).sum().alias(c) for c in cols_sumar]
-            lazy_base = self._obtener_lazy_frame(self.paths_res, {col_agrupar: pl.String})
-
-            # Normalizar y rellenar vacíos antes de agrupar
-            lazy_df = (
-                lazy_base
-                .with_columns(
-                    pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
+            col_agrupar = self.col_group_res.get()
+            indices_vals = self.listbox_vals.curselection()
+            cols_sumar = [self.listbox_vals.get(i) for i in indices_vals]
+            archivo_out = self.out_file_res.get()
+            formato = self.format_res.get()
+    
+            try:
+                # 1. Obtener la base de datos
+                lazy_base = self._obtener_lazy_frame(self.paths_res, {col_agrupar: pl.String})
+    
+                # 2. Colectar temporalmente para sanear las columnas con el algoritmo agnóstico
+                df_base = lazy_base.collect()
+                df_saneado = aplicar_formato_limpio(df_base)
+    
+                # 3. Expresiones de suma segura para cualquier columna elegida
+                exprs = [pl.col(c).sum().round(2).alias(c) for c in cols_sumar]
+    
+                # 4. Agrupar y procesar el resumen
+                df_resumen = (
+                    df_saneado
+                    .with_columns(
+                        pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
+                    )
+                    .filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
+                    .with_columns(pl.col(col_agrupar).forward_fill())
+                    .filter(pl.col(col_agrupar).is_not_null())
+                    .group_by(col_agrupar)
+                    .agg(exprs)
+                    .sort(col_agrupar)
                 )
-                .filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
-                .with_columns(pl.col(col_agrupar).forward_fill())
-                .filter(pl.col(col_agrupar).is_not_null())
-            )
-
-            df_resumen = lazy_df.group_by(col_agrupar).agg(exprs).sort(col_agrupar).collect()
-
-            if formato == "csv":
-                if not archivo_out.endswith(".csv"):
-                    archivo_out = os.path.splitext(archivo_out)[0] + ".csv"
-                df_resumen.write_csv(archivo_out)
-            else:
-                if not archivo_out.endswith(".xlsx"):
-                    archivo_out = os.path.splitext(archivo_out)[0] + ".xlsx"
-                df_resumen.write_excel(archivo_out)
-
-            self.root.after(0, self.status_res.config, {"text": "✅ Resumen generado exitosamente.", "fg": "green"})
-            self.root.after(0, messagebox.showinfo, "Éxito", f"Procesadas {len(df_resumen)} cuentas únicas.\nGuardado en:\n{archivo_out}")
-        except Exception as e:
-            self.root.after(0, messagebox.showerror, "Error Fatal", f"Ocurrió un error:\n{e}")
-            self.root.after(0, self.status_res.config, {"text": "❌ Error.", "fg": "red"})
-        finally:
-            self.root.after(0, self.btn_process_res.config, {"state": tk.NORMAL})
+    
+                # 5. Exportar según formato
+                if formato == "csv":
+                    if not archivo_out.endswith(".csv"):
+                        archivo_out = os.path.splitext(archivo_out)[0] + ".csv"
+                    df_resumen.write_csv(archivo_out)
+                else:
+                    if not archivo_out.endswith(".xlsx"):
+                        archivo_out = os.path.splitext(archivo_out)[0] + ".xlsx"
+                    df_resumen.write_excel(archivo_out)
+    
+                self.root.after(0, self.status_res.config, {"text": "✅ Resumen generado exitosamente.", "fg": "green"})
+                self.root.after(0, messagebox.showinfo, "Éxito", f"Procesadas {len(df_resumen)} cuentas únicas.\nGuardado en:\n{archivo_out}")
+            except Exception as e:
+                self.root.after(0, messagebox.showerror, "Error Fatal", f"Ocurrió un error:\n{e}")
+                self.root.after(0, self.status_res.config, {"text": "❌ Error.", "fg": "red"})
+            finally:
+                self.root.after(0, self.btn_process_res.config, {"state": tk.NORMAL})
 
     def setup_ui_convertidor(self):
         self.file_display_conv = tk.StringVar()
