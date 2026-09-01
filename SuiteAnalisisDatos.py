@@ -74,41 +74,63 @@ def obtener_archivo_limpio(filepath):
     ext = os.path.splitext(filepath)[1].lower()
 
     # --- PROCESAMIENTO PARA ARCHIVOS EXCEL ---
-    if ext in ['.xlsx', '.xlsm']:
+# Reemplazar la sección de lectura Excel en obtener_archivo_limpio:
+    if ext in ['.xlsx', '.xlsm', '.xls']:
         try:
-            wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
-            sheet = wb.active
-
-            header_idx = 0
-            for idx, row in enumerate(sheet.iter_rows(values_only=True)):
-                if idx > 150:
-                    break
-                if not row:
-                    continue
-                row_vals = [str(c).strip() if c is not None else "" for c in row]
-                if any(row_vals) and es_encabezado_real(row_vals):
-                    header_idx = idx
-                    break
-
             temp_dir = os.path.join(os.path.dirname(filepath), "_temp_cleaned_csv")
             os.makedirs(temp_dir, exist_ok=True)
             clean_filename = f"clean_xl_{os.path.basename(filepath)}.csv"
             clean_path = os.path.join(temp_dir, clean_filename)
-
+    
+            header_escrito = False
+    
             with open(clean_path, 'w', encoding='utf-8', newline='') as f_out:
                 writer = csv.writer(f_out)
-                for idx, row in enumerate(sheet.iter_rows(values_only=True)):
-                    if idx < header_idx:
-                        continue
-                    writer.writerow([c if c is not None else "" for c in row])
-
-            wb.close()
+    
+                if ext == '.xls':
+                    wb = xlrd.open_workbook(filepath)
+                    hojas = [wb.sheet_by_index(i) for i in range(wb.nsheets)]
+                else:
+                    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+                    hojas = wb.worksheets
+    
+                for sheet in hojas:
+                    # Obtener iterador de filas según librería
+                    if ext == '.xls':
+                        filas = [sheet.row_values(r) for r in range(sheet.nrows)]
+                    else:
+                        filas = list(sheet.iter_rows(values_only=True))
+    
+                    header_idx = None
+                    for idx, row in enumerate(filas[:150]):
+                        if not row: continue
+                        row_vals = [str(c).strip() if c is not None else "" for c in row]
+                        if any(row_vals) and es_encabezado_real(row_vals):
+                            header_idx = idx
+                            break
+    
+                    if header_idx is None:
+                        continue  # Pestaña vacía o sin estructura válida
+    
+                    # Escribir contenido
+                    for idx, row in enumerate(filas):
+                        if idx < header_idx:
+                            continue  # Salta metadatos superiores
+                        if idx == header_idx and header_escrito:
+                            continue  # Evita duplicar el encabezado en hojas subsecuentes
+    
+                        writer.writerow([c if c is not None else "" for c in row])
+    
+                    header_escrito = True
+    
+                if ext != '.xls': wb.close()
+    
             _CLEAN_FILES_CACHE[filepath] = (clean_path, ',')
             return clean_path, ','
         except Exception:
             _CLEAN_FILES_CACHE[filepath] = (filepath, ',')
             return filepath, ','
-
+        
     # --- PROCESAMIENTO PARA ARCHIVOS CSV ---
     encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8']
     for enc in encodings:
