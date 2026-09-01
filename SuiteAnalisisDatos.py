@@ -551,6 +551,7 @@ class SuiteContableIntegrada:
         self.status_sep.config(text="Procesando datos con Polars...", fg="blue")
         threading.Thread(target=self._separar_datos_thread, daemon=True).start()
 
+
     def _separar_datos_thread(self):
         col = self.col_name_sep.get()
         carpeta_out = self.out_dir_sep.get()
@@ -558,7 +559,7 @@ class SuiteContableIntegrada:
         try:
             os.makedirs(carpeta_out, exist_ok=True)
             lazy_base = self._obtener_lazy_frame(self.paths_sep, {col: pl.String})
-
+    
             # --- PIPELINE DE LIMPIEZA DINÁMICO Y RELLENO CON POLARS ---
             lazy_procesado = (
                 lazy_base
@@ -580,12 +581,14 @@ class SuiteContableIntegrada:
                 # 4. Eliminar filas no asignadas
                 .filter(pl.col(col).is_not_null())
             )
-
+    
             # Obtener el catálogo único de cuentas resultantes
             df_cuentas = lazy_procesado.select(pl.col(col)).unique().collect()
             cuentas = [str(c) for c in df_cuentas[col].to_list() if c is not None]
             total = len(cuentas)
-
+    
+            LIMITE_EXCEL = 1_000_000  # Margen de seguridad bajo el límite de 1,048,576 filas
+    
             for i, cuenta in enumerate(cuentas):
                 self.root.after(0, self.status_sep.config, {"text": f"Procesando ({i+1}/{total}): {cuenta}"})
                 safe_name = "".join(c for c in cuenta if c.isalnum() or c in (' ', '_', '-')).strip()
@@ -593,16 +596,44 @@ class SuiteContableIntegrada:
                 # Recolectar datos de la cuenta y aplicar la limpieza de formatos
                 df_grupo = lazy_procesado.filter(pl.col(col) == cuenta).collect()
                 df_limpio = aplicar_formato_limpio(df_grupo)
-
-                # Exportar según el formato seleccionado
+    
+                # --- BLOQUE DE EXPORTACIÓN CON PROTECCIÓN PARA EXCEL ---
                 if formato == "csv":
-                    # Usamos utf-8-sig para que Excel respete caracteres especiales (como '·')
+                    # Se utiliza utf-8-sig para preservar caracteres especiales en Excel
                     df_limpio.write_csv(os.path.join(carpeta_out, f"{safe_name}.csv"))
+    
                 elif formato == "parquet":
                     df_limpio.write_parquet(os.path.join(carpeta_out, f"{safe_name}.parquet"))
-                else:
-                    df_limpio.write_excel(os.path.join(carpeta_out, f"{safe_name}.xlsx"))
-
+    
+                else:  # formato == "xlsx"
+                    excel_path = os.path.join(carpeta_out, f"{safe_name}.xlsx")
+                    total_filas = df_limpio.height
+    
+                    # Caso A: Si cabe en una sola hoja
+                    if total_filas <= LIMITE_EXCEL:
+                        df_limpio.write_excel(excel_path)
+    
+                    # Caso B: Si supera el límite, fragmenta en múltiples pestañas
+                    else:
+                        num_partes = math.ceil(total_filas / LIMITE_EXCEL)
+                        
+                        with xlsxwriter.Workbook(excel_path, {'constant_memory': True}) as workbook:
+                            for parte in range(num_partes):
+                                offset = parte * LIMITE_EXCEL
+                                df_chunk = df_limpio.slice(offset, LIMITE_EXCEL)
+                                
+                                sheet_name = f"Parte_{parte + 1}"
+                                worksheet = workbook.add_worksheet(sheet_name)
+                                
+                                # Escribir Encabezados
+                                for col_num, col_name in enumerate(df_chunk.columns):
+                                    worksheet.write(0, col_num, col_name)
+                                
+                                # Escribir Filas
+                                for row_idx, row_data in enumerate(df_chunk.iter_rows()):
+                                    for col_idx, val in enumerate(row_data):
+                                        worksheet.write(row_idx + 1, col_idx, val)
+    
             self.root.after(0, self.status_sep.config, {"text": "✅ Proceso finalizado.", "fg": "green"})
             self.root.after(0, messagebox.showinfo, "Éxito", f"Archivos exportados en:\n{carpeta_out}")
         except Exception as e:
