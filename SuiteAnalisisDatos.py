@@ -32,38 +32,36 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 _CLEAN_FILES_CACHE = {}
 
 def es_encabezado_real(campos):
-    """Evalúa si una fila contiene nombres de columnas típicos de informes contables/fiscales."""
+    """
+    Detecta el encabezado buscando la transición de 'predominantemente texto' 
+    a 'predominantemente datos numéricos'.
+    """
     if not campos or len(campos) < 2:
         return False
 
-    textos = [str(c).strip().upper() for c in campos if str(c).strip()]
-    if not textos:
-        return False
+    # 1. Analizamos la composición de la fila
+    total_campos = len(campos)
+    textos = 0
+    numeros = 0
+    vacios = 0
 
-    patron_fecha = re.compile(r'^\d{1,4}[-/\.]\d{1,2}[-/\.]\d{1,4}$')
-    patron_num_largo = re.compile(r'^\d{8,}$')
-    patron_monto = re.compile(r'^-?\d+[\.,]\d{2}$')
+    for c in campos:
+        val = str(c).strip()
+        if not val:
+            vacios += 1
+        elif val.replace('.', '', 1).replace('-', '', 1).isdigit():
+            numeros += 1
+        else:
+            textos += 1
 
-    coincidencias_datos = 0
-    for val in textos:
-        if patron_fecha.search(val) or patron_num_largo.search(val) or patron_monto.search(val):
-            coincidencias_datos += 1
-
-    if coincidencias_datos >= 2:
-        return False
-
-    palabras_clave = [
-        'RTN', 'NOMBRE', 'DECLARACION', 'FECHA', 'CAI', 'ESTADO', 
-        'ESTABLECIMIENTO', 'PUNTO', 'TIPO', 'CORRELATIVO', 'IMPORTE', 
-        'IMPUESTO', 'NUMERO', 'CODIGO', 'CUENTA', 'DESCRIPCION', 'MONTO',
-        'SALDO', 'DEBE', 'HABER', 'DOCUMENTO', 'VALOR', 'ACCOUNT', 'TRANS', 'DEBIT', 'CREDIT'
-    ]
-
-    texto_unido = " ".join(textos)
-    coincidencias_header = sum(1 for kw in palabras_clave if kw in texto_unido)
-
-    return coincidencias_header >= 1 or (coincidencias_datos == 0)
-
+    # 2. Un encabezado real tiene:
+    # - Predominancia de texto (nombres de columna)
+    # - Muy pocos números (no es una fila de datos)
+    
+    es_casi_todo_texto = (textos / total_campos) > 0.6  # Más del 60% es texto
+    hay_pocos_numeros = (numeros / total_campos) < 0.2  # Menos del 20% son números
+    
+    return es_casi_todo_texto and hay_pocos_numeros
 
 def obtener_archivo_limpio(filepath):
     """
