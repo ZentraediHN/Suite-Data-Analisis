@@ -325,26 +325,34 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 # ==============================================================================
 
 def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
-    """Aplica formato inteligente y estricto para redondear flotantes a 2 decimales y limpiar fechas."""
+    """
+    Normaliza y limpia los datos de forma agnóstica a los nombres de las columnas,
+    basándose exclusivamente en la inferencia de tipos de datos (dtypes) de Polars.
+    """
     exprs = []
     
     for col in df.columns:
         dtype = df.schema[col]
         col_upper = col.upper()
         
-        # A) Columnas de montos o saldos (Forzar estrictamente a 2 decimales reales)
-        if any(k in col_upper for k in ['DEBIT', 'CREDIT', 'SALDO', 'MONTO', 'IMPORTE', 'VALOR']):
+        # 1. Columna detectada como Flotante (Montos, Precios, Porcentajes, Impuestos)
+        if dtype in (pl.Float64, pl.Float32):
             exprs.append(
                 pl.col(col)
-                .cast(pl.Utf8)
-                .str.replace_all(r"[,\$]", "")
-                .cast(pl.Float64, strict=False)
-                .round(2)  # Forzar a 2 decimales exactos
                 .fill_null(0.0)
+                .round(4)  # Mantiene hasta 4 decimales limpios sin imprecisión flotante (ej: .0004)
                 .alias(col)
             )
             
-        # B) Limpieza de Fechas (Asegurar formato plano YYYY-MM-DD o el deseado sin desfases)
+        # 2. Columna detectada como Entero (Cantidades, Unidades, IDs enteras)
+        elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.Int8, pl.UInt64, pl.UInt32, pl.UInt16, pl.UInt8):
+            exprs.append(
+                pl.col(col)
+                .fill_null(0)
+                .alias(col)
+            )
+            
+        # 3. Columna detectada como Fecha o Timestamp
         elif dtype in (pl.Date, pl.Datetime) or 'FECHA' in col_upper or 'DATE' in col_upper:
             exprs.append(
                 pl.col(col)
@@ -354,23 +362,21 @@ def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
                 .alias(col)
             )
             
-        # C) Numéricos enteros
-        elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.UInt64, pl.UInt32):
-            exprs.append(pl.col(col).cast(pl.Int64, strict=False).alias(col))
-            
-        # D) Textos generales e identificadores (Evitar el .0 y limpiar espacios)
+        # 4. Columna de Texto/Cadena (String / Utf8)
         else:
+            # Intentar convertir cadenas que contienen números limpios formateados como texto
+            # Si contiene un '.0' al final proveniente de lecturas de Excel, lo remueve.
             exprs.append(
                 pl.col(col)
                 .cast(pl.Utf8)
                 .str.replace(r"\s+00:00:00.*$", "")
-                .str.replace(r"\.0$", "") 
+                .str.replace(r"\.0$", "")
+                .str.strip_chars()
                 .alias(col)
             )
             
     return df.with_columns(exprs)
-
-
+    
 # ==============================================================================
 # CLASE PRINCIPAL DE LA SUITE
 # ==============================================================================
