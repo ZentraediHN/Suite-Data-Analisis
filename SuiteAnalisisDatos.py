@@ -324,10 +324,35 @@ def ensamblar_y_vincular_pdf(pdf_entrada, items, pdf_indice_temp, pdf_salida, de
 # FUNCIÓN DE FORMATEO DINÁMICO DE COLUMNAS
 # ==============================================================================
 
+def es_columna_numerica_disfrazada(s: pl.Series, muestra_n: int = 100) -> bool:
+    """
+    Evalúa si una columna de texto contiene principalmente valores numéricos
+    después de remover símbolos de moneda (L, $, etc.), comas y espacios.
+    """
+    # Tomar valores no nulos y no vacíos
+    validos = s.filter(s.is_not_null() & (s.str.strip_chars() != "")).head(muestra_n)
+    if len(validos) == 0:
+        return False
+
+    # Regex que remueve comas, espacios y letras/símbolos monetarios comunes
+    # Conserva dígitos, puntos decimales y el signo negativo
+    limpios = validos.str.replace_all(r"[^\d.-]", "")
+    
+    # Expresión regular para validar formato flotante o entero válido
+    # Acepta: "123.45", "-123.45", "100"
+    patron_numero = r"^-?\d+(\.\d+)?$"
+    
+    # Contar cuántos elementos de la muestra se convierten en números válidos
+    coincidencias = limpios.str.contains(patron_numero).sum()
+    
+    # Si más del 70% de la muestra son números, consideramos la columna numérica
+    return (coincidencias / len(validos)) >= 0.7
+
+
 def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Normaliza y limpia los datos de forma agnóstica a los nombres de las columnas,
-    basándose exclusivamente en la inferencia de tipos de datos (dtypes) de Polars.
+    Normaliza y limpia los datos de forma agnóstica a los nombres de columnas,
+    detectando números por tipo nativo o por evaluación del contenido (símbolos monetarios).
     """
     exprs = []
     
@@ -335,16 +360,16 @@ def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
         dtype = df.schema[col]
         col_upper = col.upper()
         
-        # 1. Columna detectada como Flotante (Montos, Precios, Porcentajes, Impuestos)
+        # 1. Numéricos declarados nativamente (Floats)
         if dtype in (pl.Float64, pl.Float32):
             exprs.append(
                 pl.col(col)
                 .fill_null(0.0)
-                .round(4)  # Mantiene hasta 4 decimales limpios sin imprecisión flotante (ej: .0004)
+                .round(4)
                 .alias(col)
             )
             
-        # 2. Columna detectada como Entero (Cantidades, Unidades, IDs enteras)
+        # 2. Enteros declarados nativamente
         elif dtype in (pl.Int64, pl.Int32, pl.Int16, pl.Int8, pl.UInt64, pl.UInt32, pl.UInt16, pl.UInt8):
             exprs.append(
                 pl.col(col)
@@ -352,7 +377,7 @@ def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
                 .alias(col)
             )
             
-        # 3. Columna detectada como Fecha o Timestamp
+        # 3. Fechas
         elif dtype in (pl.Date, pl.Datetime) or 'FECHA' in col_upper or 'DATE' in col_upper:
             exprs.append(
                 pl.col(col)
@@ -362,18 +387,32 @@ def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
                 .alias(col)
             )
             
-        # 4. Columna de Texto/Cadena (String / Utf8)
+        # 4. Cadenas de texto (evaluar si son montos con símbolos monetarios o texto puro)
         else:
-            # Intentar convertir cadenas que contienen números limpios formateados como texto
-            # Si contiene un '.0' al final proveniente de lecturas de Excel, lo remueve.
-            exprs.append(
-                pl.col(col)
-                .cast(pl.Utf8)
-                .str.replace(r"\s+00:00:00.*$", "")
-                .str.replace(r"\.0$", "")
-                .str.strip_chars()
-                .alias(col)
-            )
+            serie_col = df[col]
+            
+            if es_columna_numerica_disfrazada(serie_col):
+                # Limpieza de símbolos de moneda, comas y guiones de cero ("L  -", "-", etc.)
+                exprs.append(
+                    pl.col(col)
+                    .cast(pl.Utf8)
+                    .str.replace_all(r"[^\d.-]", "")  # Elimina 'L', '$', comas, espacios
+                    .replace("", None)
+                    .cast(pl.Float64, strict=False)
+                    .fill_null(0.0)
+                    .round(4)
+                    .alias(col)
+                )
+            else:
+                # Texto general (Nombres, Cuentas, Conceptos, Memos)
+                exprs.append(
+                    pl.col(col)
+                    .cast(pl.Utf8)
+                    .str.replace(r"\s+00:00:00.*$", "")
+                    .str.replace(r"\.0$", "")
+                    .str.strip_chars()
+                    .alias(col)
+                )
             
     return df.with_columns(exprs)
     
