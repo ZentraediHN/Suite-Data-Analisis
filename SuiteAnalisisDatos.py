@@ -835,6 +835,8 @@ class SuiteContableIntegrada:
         self.col_group_res = tk.StringVar()
         self.out_file_res = tk.StringVar()
         self.format_res = tk.StringVar(value="xlsx")
+        # ---> NUEVO: Variable para controlar si se excluyen las filas de 'TOTAL'
+        self.limpiar_totales_res = tk.BooleanVar(value=True)
 
         tk.Label(self.tab_resumen, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(10, 2))
         f_file = tk.Frame(self.tab_resumen)
@@ -860,6 +862,16 @@ class SuiteContableIntegrada:
         f_fmt.pack()
         tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_res, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=15)
         tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_res, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=15)
+
+        # ---> NUEVO: Casilla de verificación para filtrar filas de totales
+        f_chk = tk.Frame(self.tab_resumen)
+        f_chk.pack(pady=(5, 5))
+        tk.Checkbutton(
+            f_chk, 
+            text="Excluir filas que contengan la palabra 'TOTAL' (Útil para balances contables)", 
+            variable=self.limpiar_totales_res, 
+            font=("Arial", 9)
+        ).pack()
 
         tk.Label(self.tab_resumen, text="5. Guardar Resumen Como:", font=("Arial", 10, "bold")).pack(pady=(10, 2))
         f_out = tk.Frame(self.tab_resumen)
