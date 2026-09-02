@@ -627,40 +627,41 @@ class SuiteContableIntegrada:
     def _on_tipo_cambiado(self, columna, nuevo_tipo):
         """Actualiza la selección en el diccionario interno."""
         self.tipos_columnas[columna] = nuevo_tipo
-        def setup_ui_separador(self):
-            self.file_display_sep = tk.StringVar()
-            self.col_name_sep = tk.StringVar()
-            self.out_dir_sep = tk.StringVar()
-            self.format_sep = tk.StringVar(value="csv")
-    
-            tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-            f_file = tk.Frame(self.tab_separador)
-            f_file.pack()
-            tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
-            tk.Button(f_file, text="Examinar...", command=self.seleccionar_archivos_sep).pack(side=tk.LEFT)
-    
-            tk.Label(self.tab_separador, text="2. Columna para Separar Cuentas:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-            self.combo_col_sep = ttk.Combobox(self.tab_separador, textvariable=self.col_name_sep, state="readonly", width=47)
-            self.combo_col_sep.pack()
-    
-            tk.Label(self.tab_separador, text="3. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-            f_fmt = tk.Frame(self.tab_separador)
-            f_fmt.pack()
-            tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_sep, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
-            tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_sep, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
-            tk.Radiobutton(f_fmt, text="Parquet (.parquet)", variable=self.format_sep, value="parquet", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
-    
-            tk.Label(self.tab_separador, text="4. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-            f_dir = tk.Frame(self.tab_separador)
-            f_dir.pack()
-            tk.Entry(f_dir, textvariable=self.out_dir_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
-            tk.Button(f_dir, text="Examinar...", command=self.seleccionar_carpeta_sep).pack(side=tk.LEFT)
-    
-            self.btn_process_sep = tk.Button(self.tab_separador, text="▶ DIVIDIR ARCHIVOS", command=self.iniciar_proceso_sep, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), pady=5, padx=20)
-            self.btn_process_sep.pack(pady=20)
-    
-            self.status_sep = tk.Label(self.tab_separador, text="Esperando instrucciones...", fg="gray")
-            self.status_sep.pack()
+
+    def setup_ui_separador(self):
+        self.file_display_sep = tk.StringVar()
+        self.col_name_sep = tk.StringVar()
+        self.out_dir_sep = tk.StringVar()
+        self.format_sep = tk.StringVar(value="csv")
+
+        tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        f_file = tk.Frame(self.tab_separador)
+        f_file.pack()
+        tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
+        tk.Button(f_file, text="Examinar...", command=self.seleccionar_archivos_sep).pack(side=tk.LEFT)
+
+        tk.Label(self.tab_separador, text="2. Columna para Separar Cuentas:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        self.combo_col_sep = ttk.Combobox(self.tab_separador, textvariable=self.col_name_sep, state="readonly", width=47)
+        self.combo_col_sep.pack()
+
+        tk.Label(self.tab_separador, text="3. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        f_fmt = tk.Frame(self.tab_separador)
+        f_fmt.pack()
+        tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_sep, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+        tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_sep, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+        tk.Radiobutton(f_fmt, text="Parquet (.parquet)", variable=self.format_sep, value="parquet", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+
+        tk.Label(self.tab_separador, text="4. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        f_dir = tk.Frame(self.tab_separador)
+        f_dir.pack()
+        tk.Entry(f_dir, textvariable=self.out_dir_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
+        tk.Button(f_dir, text="Examinar...", command=self.seleccionar_carpeta_sep).pack(side=tk.LEFT)
+
+        self.btn_process_sep = tk.Button(self.tab_separador, text="▶ DIVIDIR ARCHIVOS", command=self.iniciar_proceso_sep, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), pady=5, padx=20)
+        self.btn_process_sep.pack(pady=20)
+
+        self.status_sep = tk.Label(self.tab_separador, text="Esperando instrucciones...", fg="gray")
+        self.status_sep.pack()
 
     def seleccionar_archivos_sep(self):
         paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
