@@ -835,7 +835,7 @@ class SuiteContableIntegrada:
         self.col_group_res = tk.StringVar()
         self.out_file_res = tk.StringVar()
         self.format_res = tk.StringVar(value="xlsx")
-        # ---> NUEVO: Variable para controlar si se excluyen las filas de 'TOTAL'
+        # Variable para controlar si se excluyen las filas de 'TOTAL'
         self.limpiar_totales_res = tk.BooleanVar(value=True)
 
         tk.Label(self.tab_resumen, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(10, 2))
@@ -863,7 +863,7 @@ class SuiteContableIntegrada:
         tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_res, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=15)
         tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_res, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=15)
 
-        # ---> NUEVO: Casilla de verificación para filtrar filas de totales
+        # Casilla de verificación para filtrar filas de totales
         f_chk = tk.Frame(self.tab_resumen)
         f_chk.pack(pady=(5, 5))
         tk.Checkbutton(
@@ -957,13 +957,17 @@ class SuiteContableIntegrada:
                 for c in cols_sumar
             ]
 
-            # 4. Agrupar y procesar el resumen
+            # 4. Agrupar y procesar el resumen con control condicional del Checkbutton
+            df_temp = df_saneado.with_columns(
+                pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
+            )
+
+            # Si el Checkbutton está activado, elimina las filas con la palabra 'total'
+            if self.limpiar_totales_res.get():
+                df_temp = df_temp.filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
+
             df_resumen = (
-                df_saneado
-                .with_columns(
-                    pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
-                )
-                .filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
+                df_temp
                 .with_columns(pl.col(col_agrupar).forward_fill())
                 .filter(pl.col(col_agrupar).is_not_null())
                 .group_by(col_agrupar)
