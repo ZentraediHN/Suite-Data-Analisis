@@ -915,57 +915,71 @@ class SuiteContableIntegrada:
         threading.Thread(target=self._generar_resumen_thread, daemon=True).start()
     
     def _generar_resumen_thread(self):
-            col_agrupar = self.col_group_res.get()
-            indices_vals = self.listbox_vals.curselection()
-            cols_sumar = [self.listbox_vals.get(i) for i in indices_vals]
-            archivo_out = self.out_file_res.get()
-            formato = self.format_res.get()
-    
-            try:
-                # 1. Obtener la base de datos
-                lazy_base = self._obtener_lazy_frame(self.paths_res, {col_agrupar: pl.String})
-    
-                # 2. Colectar temporalmente para sanear las columnas con el algoritmo agnóstico
-                df_base = lazy_base.collect()
-                if hasattr(self, 'tipos_columnas') and self.tipos_columnas:
-                    df_saneado = aplicar_formato_personalizado(df_base, self.tipos_columnas)
-                else:
-                    df_saneado = aplicar_formato_limpio(df_base)
-    
-                # 3. Expresiones de suma segura para cualquier columna elegida
-                exprs = [pl.col(c).sum().round(2).alias(c) for c in cols_sumar]
-    
-                # 4. Agrupar y procesar el resumen
-                df_resumen = (
-                    df_saneado
-                    .with_columns(
-                        pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
-                    )
-                    .filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
-                    .with_columns(pl.col(col_agrupar).forward_fill())
-                    .filter(pl.col(col_agrupar).is_not_null())
-                    .group_by(col_agrupar)
-                    .agg(exprs)
-                    .sort(col_agrupar)
+        col_agrupar = self.col_group_res.get()
+        indices_vals = self.listbox_vals.curselection()
+        cols_sumar = [self.listbox_vals.get(i) for i in indices_vals]
+        archivo_out = self.out_file_res.get()
+        formato = self.format_res.get()
+
+        try:
+            # 1. Obtener la base de datos
+            lazy_base = self._obtener_lazy_frame(self.paths_res, {col_agrupar: pl.String})
+
+            # 2. Colectar temporalmente para sanear las columnas con el algoritmo agnóstico
+            df_base = lazy_base.collect()
+            if hasattr(self, 'tipos_columnas') and self.tipos_columnas:
+                df_saneado = aplicar_formato_personalizado(df_base, self.tipos_columnas)
+            else:
+                df_saneado = aplicar_formato_limpio(df_base)
+
+            # 3. Expresiones de suma segura con casteo a Float64 y limpieza de comas
+            exprs = [
+                pl.col(c)
+                .cast(pl.Utf8)                          # Asegura que se lea como texto para limpiar
+                .str.replace_all(",", "")               # Elimina comas de formato de miles (ej. 1,500.00)
+                .cast(pl.Float64, strict=False)         # Convierte a numérico sin colapsar por valores nulos
+                .fill_null(0.0)                         # Trata textos no numéricos o vacíos como 0.0
+                .sum()
+                .round(2)
+                .alias(c) 
+                for c in cols_sumar
+            ]
+
+            # 4. Agrupar y procesar el resumen
+            df_resumen = (
+                df_saneado
+                .with_columns(
+                    pl.col(col_agrupar).cast(pl.Utf8).str.strip_chars().replace("", None)
                 )
-    
-                # 5. Exportar según formato
-                if formato == "csv":
-                    if not archivo_out.endswith(".csv"):
-                        archivo_out = os.path.splitext(archivo_out)[0] + ".csv"
-                    df_resumen.write_csv(archivo_out)
-                else:
-                    if not archivo_out.endswith(".xlsx"):
-                        archivo_out = os.path.splitext(archivo_out)[0] + ".xlsx"
-                    df_resumen.write_excel(archivo_out)
-    
-                self.root.after(0, self.status_res.config, {"text": "✅ Resumen generado exitosamente.", "fg": "green"})
-                self.root.after(0, messagebox.showinfo, "Éxito", f"Procesadas {len(df_resumen)} cuentas únicas.\nGuardado en:\n{archivo_out}")
-            except Exception as e:
-                self.root.after(0, messagebox.showerror, "Error Fatal", f"Ocurrió un error:\n{e}")
-                self.root.after(0, self.status_res.config, {"text": "❌ Error.", "fg": "red"})
-            finally:
-                self.root.after(0, self.btn_process_res.config, {"state": tk.NORMAL})
+                .filter(~pl.col(col_agrupar).str.contains(r"(?i)\btotal\b").fill_null(False))
+                .with_columns(pl.col(col_agrupar).forward_fill())
+                .filter(pl.col(col_agrupar).is_not_null())
+                .group_by(col_agrupar)
+                .agg(exprs)
+                .sort(col_agrupar)
+            )
+
+            # 5. Exportar según formato con soporte de BOM para UTF-8 en CSV
+            if formato == "csv":
+                if not archivo_out.endswith(".csv"):
+                    archivo_out = os.path.splitext(archivo_out)[0] + ".csv"
+                
+                # Escribir con BOM (\xef\xbb\xbf) para mantener símbolos intactos en Excel
+                with open(archivo_out, "wb") as f:
+                    f.write(b'\xef\xbb\xbf')
+                    df_resumen.write_csv(f)
+            else:
+                if not archivo_out.endswith(".xlsx"):
+                    archivo_out = os.path.splitext(archivo_out)[0] + ".xlsx"
+                df_resumen.write_excel(archivo_out)
+
+            self.root.after(0, self.status_res.config, {"text": "✅ Resumen generado exitosamente.", "fg": "green"})
+            self.root.after(0, messagebox.showinfo, "Éxito", f"Procesadas {len(df_resumen)} cuentas únicas.\nGuardado en:\n{archivo_out}")
+        except Exception as e:
+            self.root.after(0, messagebox.showerror, "Error Fatal", f"Ocurrió un error:\n{e}")
+            self.root.after(0, self.status_res.config, {"text": "❌ Error.", "fg": "red"})
+        finally:
+            self.root.after(0, self.btn_process_res.config, {"state": tk.NORMAL})
 
     def setup_ui_convertidor(self):
         self.file_display_conv = tk.StringVar()
