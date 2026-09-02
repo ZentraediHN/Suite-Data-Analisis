@@ -74,33 +74,33 @@ def obtener_archivo_limpio(filepath):
     ext = os.path.splitext(filepath)[1].lower()
 
     # --- PROCESAMIENTO PARA ARCHIVOS EXCEL ---
-# Reemplazar la sección de lectura Excel en obtener_archivo_limpio:
     if ext in ['.xlsx', '.xlsm', '.xls']:
         try:
             temp_dir = os.path.join(os.path.dirname(filepath), "_temp_cleaned_csv")
             os.makedirs(temp_dir, exist_ok=True)
             clean_filename = f"clean_xl_{os.path.basename(filepath)}.csv"
             clean_path = os.path.join(temp_dir, clean_filename)
-    
+
             header_escrito = False
-    
-            with open(clean_path, 'w', encoding='utf-8', newline='') as f_out:
+
+            # Usar utf-8-sig (con BOM) para garantizar la correcta interpretación de caracteres especiales
+            with open(clean_path, 'w', encoding='utf-8-sig', newline='') as f_out:
                 writer = csv.writer(f_out)
-    
+
                 if ext == '.xls':
                     wb = xlrd.open_workbook(filepath)
                     hojas = [wb.sheet_by_index(i) for i in range(wb.nsheets)]
                 else:
-                    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+                    # Sin data_only=True para evitar que openpyxl convierta enteros en flotantes automáticamente
+                    wb = openpyxl.load_workbook(filepath, read_only=True)
                     hojas = wb.worksheets
-    
+
                 for sheet in hojas:
-                    # Obtener iterador de filas según librería
                     if ext == '.xls':
                         filas = [sheet.row_values(r) for r in range(sheet.nrows)]
                     else:
                         filas = list(sheet.iter_rows(values_only=True))
-    
+
                     header_idx = None
                     for idx, row in enumerate(filas[:150]):
                         if not row: continue
@@ -108,35 +108,45 @@ def obtener_archivo_limpio(filepath):
                         if any(row_vals) and es_encabezado_real(row_vals):
                             header_idx = idx
                             break
-    
+
                     if header_idx is None:
                         continue  # Pestaña vacía o sin estructura válida
-    
-                    # Escribir contenido
+
+                    # Escribir contenido formateando números enteros para que no tengan ".0"
                     for idx, row in enumerate(filas):
                         if idx < header_idx:
                             continue  # Salta metadatos superiores
                         if idx == header_idx and header_escrito:
-                            continue  # Evita duplicar el encabezado en hojas subsecuentes
-    
-                        writer.writerow([c if c is not None else "" for c in row])
-    
+                            continue  # Evita duplicar el encabezado
+
+                        # Limpieza de valores: Si es flotante entero (ej. 4158.0), convertir a "4158"
+                        fila_limpia = []
+                        for c in row:
+                            if c is None:
+                                fila_limpia.append("")
+                            elif isinstance(c, float) and c.is_integer():
+                                fila_limpia.append(str(int(c)))
+                            else:
+                                fila_limpia.append(str(c))
+
+                        writer.writerow(fila_limpia)
+
                     header_escrito = True
-    
+
                 if ext != '.xls': wb.close()
-    
+
             _CLEAN_FILES_CACHE[filepath] = (clean_path, ',')
             return clean_path, ','
         except Exception:
             _CLEAN_FILES_CACHE[filepath] = (filepath, ',')
             return filepath, ','
-        
+
     # --- PROCESAMIENTO PARA ARCHIVOS CSV ---
-    encodings = ['utf-8-sig', 'latin-1', 'cp1252', 'utf-8']
+    encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
     for enc in encodings:
         try:
             lineas_raw = []
-            with open(filepath, 'r', encoding=enc, errors='replace') as f:
+            with open(filepath, 'r', encoding=enc) as f:
                 for _ in range(150):
                     line = f.readline()
                     if not line:
@@ -172,7 +182,7 @@ def obtener_archivo_limpio(filepath):
             target_header_row = None
             header_record_index = -1
 
-            with open(filepath, 'r', encoding=enc, errors='replace') as f_obj:
+            with open(filepath, 'r', encoding=enc) as f_obj:
                 reader = csv.reader(f_obj, delimiter=best_sep)
                 for idx, row in enumerate(reader):
                     if idx > 150:
@@ -191,7 +201,7 @@ def obtener_archivo_limpio(filepath):
             col_2 = target_header_row[1].strip() if len(target_header_row) > 1 else ""
 
             linea_fisica_idx = -1
-            with open(filepath, 'r', encoding=enc, errors='replace') as f:
+            with open(filepath, 'r', encoding=enc) as f:
                 for l_idx, l in enumerate(f):
                     if col_1 in l and (not col_2 or col_2 in l):
                         linea_fisica_idx = l_idx
@@ -206,10 +216,11 @@ def obtener_archivo_limpio(filepath):
             clean_filename = f"clean_{os.path.basename(filepath)}"
             clean_path = os.path.join(temp_dir, clean_filename)
 
-            with open(filepath, 'r', encoding=enc, errors='replace') as f_in:
+            # Escribir con utf-8-sig para preservar el símbolo "·" sin corrupción "Â·"
+            with open(filepath, 'r', encoding=enc) as f_in:
                 for _ in range(linea_fisica_idx):
                     f_in.readline()
-                with open(clean_path, 'w', encoding='utf-8') as f_out:
+                with open(clean_path, 'w', encoding='utf-8-sig', newline='') as f_out:
                     shutil.copyfileobj(f_in, f_out)
 
             _CLEAN_FILES_CACHE[filepath] = (clean_path, best_sep)
@@ -520,15 +531,40 @@ class SuiteContableIntegrada:
         self.setup_ui_separador()
         self.setup_ui_resumen()
         self.setup_ui_convertidor()
+        
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
         if not paths:
             return None
-    
+
+        # 1. Mapear los tipos de la interfaz a tipos nativos de Polars
+        overrides_polars = {}
+        if col_dtypes:
+            for col_name, tipo_val in col_dtypes.items():
+                # Si ya es un tipo de Polars se asigna directo, si es string de la UI se mapea
+                if tipo_val in ("Texto", "str", "string"):
+                    overrides_polars[col_name] = pl.Utf8
+                elif tipo_val in ("Float (Decimal)", "float", "float64"):
+                    overrides_polars[col_name] = pl.Float64
+                elif tipo_val in ("Entero (Int)", "int", "int64"):
+                    overrides_polars[col_name] = pl.Int64
+                elif isinstance(tipo_val, pl.DataType):
+                    overrides_polars[col_name] = tipo_val
+
         ext = os.path.splitext(paths[0])[1].lower()
         if ext == ".parquet":
             lf = pl.scan_parquet(paths)
             cols_originales = list(lf.collect_schema().keys())
             cols_limpias = {c: c.strip() for c in cols_originales}
+            
+            # Si es Parquet y se especificaron overrides, hacer cast de las columnas
+            if overrides_polars:
+                exprs = [
+                    pl.col(c).cast(overrides_polars[c]) 
+                    for c in overrides_polars if c in cols_originales
+                ]
+                if exprs:
+                    lf = lf.with_columns(exprs)
+                    
             return lf.rename(cols_limpias)
         else:
             if len(paths) == 1:
@@ -536,9 +572,9 @@ class SuiteContableIntegrada:
                 lf = pl.scan_csv(
                     clean_path, 
                     separator=sep, 
-                    schema_overrides=col_dtypes,
+                    schema_overrides=overrides_polars if overrides_polars else None,
                     ignore_errors=True,
-                    encoding="utf8-lossy"
+                    encoding="utf8"  # Se cambia 'utf8-lossy' por 'utf8' estricto
                 )
                 cols_originales = list(lf.collect_schema().keys())
                 cols_limpias = {c: c.strip() for c in cols_originales}
@@ -550,9 +586,9 @@ class SuiteContableIntegrada:
                     lf = pl.scan_csv(
                         clean_path, 
                         separator=sep, 
-                        schema_overrides=col_dtypes,
+                        schema_overrides=overrides_polars if overrides_polars else None,
                         ignore_errors=True,
-                        encoding="utf8-lossy"
+                        encoding="utf8"  # Se cambia 'utf8-lossy' por 'utf8' estricto
                     )
                     cols_originales = list(lf.collect_schema().keys())
                     cols_limpias = {c: c.strip() for c in cols_originales}
