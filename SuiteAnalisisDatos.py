@@ -520,20 +520,33 @@ class SuiteContableIntegrada:
         self.setup_ui_separador()
         self.setup_ui_resumen()
         self.setup_ui_convertidor()
-
     def _obtener_lazy_frame(self, paths, col_dtypes=None):
-            if not paths:
-                return None
+        if not paths:
+            return None
     
-            ext = os.path.splitext(paths[0])[1].lower()
-            if ext == ".parquet":
-                lf = pl.scan_parquet(paths)
-                cols_originales = lf.collect_schema().names()
+        ext = os.path.splitext(paths[0])[1].lower()
+        if ext == ".parquet":
+            lf = pl.scan_parquet(paths)
+            cols_originales = list(lf.collect_schema().keys())
+            cols_limpias = {c: c.strip() for c in cols_originales}
+            return lf.rename(cols_limpias)
+        else:
+            if len(paths) == 1:
+                clean_path, sep = obtener_archivo_limpio(paths[0])
+                lf = pl.scan_csv(
+                    clean_path, 
+                    separator=sep, 
+                    schema_overrides=col_dtypes,
+                    ignore_errors=True,
+                    encoding="utf8-lossy"
+                )
+                cols_originales = list(lf.collect_schema().keys())
                 cols_limpias = {c: c.strip() for c in cols_originales}
                 return lf.rename(cols_limpias)
             else:
-                if len(paths) == 1:
-                    clean_path, sep = obtener_archivo_limpio(paths[0])
+                frames = []
+                for p in paths:
+                    clean_path, sep = obtener_archivo_limpio(p)
                     lf = pl.scan_csv(
                         clean_path, 
                         separator=sep, 
@@ -541,24 +554,10 @@ class SuiteContableIntegrada:
                         ignore_errors=True,
                         encoding="utf8-lossy"
                     )
-                    cols_originales = lf.collect_schema().names()
+                    cols_originales = list(lf.collect_schema().keys())
                     cols_limpias = {c: c.strip() for c in cols_originales}
-                    return lf.rename(cols_limpias)
-                else:
-                    frames = []
-                    for p in paths:
-                        clean_path, sep = obtener_archivo_limpio(p)
-                        lf = pl.scan_csv(
-                            clean_path, 
-                            separator=sep, 
-                            schema_overrides=col_dtypes,
-                            ignore_errors=True,
-                            encoding="utf8-lossy"
-                        )
-                        cols_originales = lf.collect_schema().names()
-                        cols_limpias = {c: c.strip() for c in cols_originales}
-                        frames.append(lf.rename(cols_limpias))
-                    return pl.concat(frames)
+                    frames.append(lf.rename(cols_limpias))
+                return pl.concat(frames)
 
     def _limpiar_nombres_columnas(self, raw_cols):
         columnas = []
@@ -582,7 +581,7 @@ class SuiteContableIntegrada:
             self.frame_tipos.destroy()
     
         # Contenedor principal para la asignación de tipos estilo Power Query
-        self.frame_tipos = ttk.LabelFrame(self.tab_separar, text=" Asignación de Tipos de Datos (Power Query) ", padding=10)
+        self.frame_tipos = ttk.LabelFrame(self.tab_separador, text=" Asignación de Tipos de Datos (Power Query) ", padding=10)
         self.frame_tipos.pack(fill="x", padx=15, pady=10)
     
         # Canvas con scrollbar por si hay muchas columnas
