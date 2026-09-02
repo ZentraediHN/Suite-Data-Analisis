@@ -395,6 +395,58 @@ def aplicar_formato_limpio(df: pl.DataFrame) -> pl.DataFrame:
                 )
             
     return df.with_columns(exprs)
+
+
+def aplicar_formato_personalizado(df: pl.DataFrame, tipos_columnas: dict) -> pl.DataFrame:
+    """
+    Aplica los tipos de datos seleccionados manualmente por el usuario.
+    """
+    exprs = []
+    
+    for col in df.columns:
+        tipo = tipos_columnas.get(col, "Texto")
+        
+        if tipo == "Float (Decimal)":
+            exprs.append(
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.replace_all(r'[,\s"]', "")
+                .str.replace_all(r"[^\d.-]", "")
+                .replace("", None)
+                .cast(pl.Float64, strict=False)
+                .fill_null(0.0)
+                .round(4)
+                .alias(col)
+            )
+        elif tipo == "Entero (Int)":
+            exprs.append(
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.replace_all(r'[,\s"]', "")
+                .str.replace_all(r"[^\d-]", "")
+                .replace("", None)
+                .cast(pl.Int64, strict=False)
+                .fill_null(0)
+                .alias(col)
+            )
+        elif tipo == "Fecha":
+            exprs.append(
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.slice(0, 10)
+                .alias(col)
+            )
+        else:  # "Texto"
+            exprs.append(
+                pl.col(col)
+                .cast(pl.Utf8)
+                .str.replace(r"\s+00:00:00.*$", "")
+                .str.strip_chars()
+                .fill_null("")
+                .alias(col)
+            )
+            
+    return df.with_columns(exprs)
     
 # ==============================================================================
 # CLASE PRINCIPAL DE LA SUITE
@@ -629,8 +681,11 @@ class SuiteContableIntegrada:
                 
                 # Recolectar datos de la cuenta y aplicar la limpieza de formatos
                 df_grupo = lazy_procesado.filter(pl.col(col) == cuenta).collect()
-                df_limpio = aplicar_formato_limpio(df_grupo)
-    
+                if hasattr(self, 'tipos_columnas') and self.tipos_columnas:
+                    df_limpio = aplicar_formato_personalizado(df_grupo, self.tipos_columnas)
+                else:
+                    df_limpio = aplicar_formato_limpio(df_grupo)
+
                 # --- BLOQUE DE EXPORTACIÓN CON PROTECCIÓN PARA EXCEL ---
                 if formato == "csv":
                     # Se utiliza utf-8-sig para preservar caracteres especiales en Excel
@@ -773,7 +828,10 @@ class SuiteContableIntegrada:
     
                 # 2. Colectar temporalmente para sanear las columnas con el algoritmo agnóstico
                 df_base = lazy_base.collect()
-                df_saneado = aplicar_formato_limpio(df_base)
+                if hasattr(self, 'tipos_columnas') and self.tipos_columnas:
+                    df_saneado = aplicar_formato_personalizado(df_base, self.tipos_columnas)
+                else:
+                    df_saneado = aplicar_formato_limpio(df_base)
     
                 # 3. Expresiones de suma segura para cualquier columna elegida
                 exprs = [pl.col(c).sum().round(2).alias(c) for c in cols_sumar]
