@@ -684,7 +684,7 @@ class SuiteContableIntegrada:
                 self._actualizar_ui_tipos_columnas(columnas_detectadas)
                 
                 self.status_sep.config(text=f"Columnas detectadas correctamente en {len(paths)} archivo(s).", fg="green")
-                except Exception as e:
+            except Exception as e:
                 messagebox.showerror("Error", f"No se pudo leer el archivo:\n{e}")
 
     def seleccionar_carpeta_sep(self):
