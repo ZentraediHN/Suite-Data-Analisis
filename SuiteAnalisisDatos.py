@@ -569,40 +569,98 @@ class SuiteContableIntegrada:
             columnas.append(nombre)
         return columnas
 
-    def setup_ui_separador(self):
-        self.file_display_sep = tk.StringVar()
-        self.col_name_sep = tk.StringVar()
-        self.out_dir_sep = tk.StringVar()
-        self.format_sep = tk.StringVar(value="csv")
-
-        tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        f_file = tk.Frame(self.tab_separador)
-        f_file.pack()
-        tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
-        tk.Button(f_file, text="Examinar...", command=self.seleccionar_archivos_sep).pack(side=tk.LEFT)
-
-        tk.Label(self.tab_separador, text="2. Columna para Separar Cuentas:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        self.combo_col_sep = ttk.Combobox(self.tab_separador, textvariable=self.col_name_sep, state="readonly", width=47)
-        self.combo_col_sep.pack()
-
-        tk.Label(self.tab_separador, text="3. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        f_fmt = tk.Frame(self.tab_separador)
-        f_fmt.pack()
-        tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_sep, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
-        tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_sep, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
-        tk.Radiobutton(f_fmt, text="Parquet (.parquet)", variable=self.format_sep, value="parquet", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
-
-        tk.Label(self.tab_separador, text="4. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        f_dir = tk.Frame(self.tab_separador)
-        f_dir.pack()
-        tk.Entry(f_dir, textvariable=self.out_dir_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
-        tk.Button(f_dir, text="Examinar...", command=self.seleccionar_carpeta_sep).pack(side=tk.LEFT)
-
-        self.btn_process_sep = tk.Button(self.tab_separador, text="▶ DIVIDIR ARCHIVOS", command=self.iniciar_proceso_sep, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), pady=5, padx=20)
-        self.btn_process_sep.pack(pady=20)
-
-        self.status_sep = tk.Label(self.tab_separador, text="Esperando instrucciones...", fg="gray")
-        self.status_sep.pack()
+    def _actualizar_ui_tipos_columnas(self, columnas):
+        """
+        Crea dinámicamente desplegables (Combobox) para asignar el tipo de dato
+        a cada columna detectada en el archivo cargado.
+        """
+        # Inicializar o reiniciar el diccionario de tipos
+        self.tipos_columnas = {}
+    
+        # Limpiar panel previo si existe
+        if hasattr(self, 'frame_tipos') and self.frame_tipos.winfo_exists():
+            self.frame_tipos.destroy()
+    
+        # Contenedor principal para la asignación de tipos estilo Power Query
+        self.frame_tipos = ttk.LabelFrame(self.tab_separar, text=" Asignación de Tipos de Datos (Power Query) ", padding=10)
+        self.frame_tipos.pack(fill="x", padx=15, pady=10)
+    
+        # Canvas con scrollbar por si hay muchas columnas
+        canvas = tk.Canvas(self.frame_tipos, height=120)
+        scrollbar = ttk.Scrollbar(self.frame_tipos, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+    
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+    
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+    
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+    
+        # Crear fila para cada columna
+        opciones_tipo = ["Texto", "Float (Decimal)", "Entero (Int)", "Fecha"]
+    
+        for idx, col in enumerate(columnas):
+            lbl = ttk.Label(scrollable_frame, text=f"{col}:", font=("Segoe UI", 9, "bold"))
+            lbl.grid(row=idx, column=0, padx=5, pady=3, sticky="w")
+    
+            combo = ttk.Combobox(scrollable_frame, values=opciones_tipo, state="readonly", width=18)
+            
+            # Detección predeterminada inteligente
+            if "fecha" in col.lower() or "date" in col.lower():
+                combo.set("Fecha")
+            elif any(term in col.lower() for term in ["monto", "debe", "haber", "saldo", "amount"]):
+                combo.set("Float (Decimal)")
+            else:
+                combo.set("Texto")
+    
+            combo.grid(row=idx, column=1, padx=5, pady=3, sticky="e")
+    
+            # Guardar la elección en el diccionario
+            self.tipos_columnas[col] = combo.get()
+            combo.bind("<<ComboboxSelected>>", lambda e, c=col, cb=combo: self._on_tipo_cambiado(c, cb.get()))
+    
+    def _on_tipo_cambiado(self, columna, nuevo_tipo):
+        """Actualiza la selección en el diccionario interno."""
+        self.tipos_columnas[columna] = nuevo_tipo
+        def setup_ui_separador(self):
+            self.file_display_sep = tk.StringVar()
+            self.col_name_sep = tk.StringVar()
+            self.out_dir_sep = tk.StringVar()
+            self.format_sep = tk.StringVar(value="csv")
+    
+            tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+            f_file = tk.Frame(self.tab_separador)
+            f_file.pack()
+            tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
+            tk.Button(f_file, text="Examinar...", command=self.seleccionar_archivos_sep).pack(side=tk.LEFT)
+    
+            tk.Label(self.tab_separador, text="2. Columna para Separar Cuentas:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+            self.combo_col_sep = ttk.Combobox(self.tab_separador, textvariable=self.col_name_sep, state="readonly", width=47)
+            self.combo_col_sep.pack()
+    
+            tk.Label(self.tab_separador, text="3. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+            f_fmt = tk.Frame(self.tab_separador)
+            f_fmt.pack()
+            tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_sep, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+            tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_sep, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+            tk.Radiobutton(f_fmt, text="Parquet (.parquet)", variable=self.format_sep, value="parquet", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
+    
+            tk.Label(self.tab_separador, text="4. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+            f_dir = tk.Frame(self.tab_separador)
+            f_dir.pack()
+            tk.Entry(f_dir, textvariable=self.out_dir_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
+            tk.Button(f_dir, text="Examinar...", command=self.seleccionar_carpeta_sep).pack(side=tk.LEFT)
+    
+            self.btn_process_sep = tk.Button(self.tab_separador, text="▶ DIVIDIR ARCHIVOS", command=self.iniciar_proceso_sep, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), pady=5, padx=20)
+            self.btn_process_sep.pack(pady=20)
+    
+            self.status_sep = tk.Label(self.tab_separador, text="Esperando instrucciones...", fg="gray")
+            self.status_sep.pack()
 
     def seleccionar_archivos_sep(self):
         paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
@@ -610,17 +668,22 @@ class SuiteContableIntegrada:
             self.paths_sep = list(paths)
             self.file_display_sep.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
             self.out_dir_sep.set(os.path.join(os.path.dirname(paths[0]), "Movimientos_Separados"))
-
+            
             try:
-                lazy_df = self._obtener_lazy_frame(self.paths_sep)
-                raw_cols = lazy_df.collect_schema().names()
-                columnas = self._limpiar_nombres_columnas(raw_cols)
+                # Se obtiene una muestra rápida de las primeras 5 filas con fetch(5)
+                df_preview = self._obtener_lazy_frame(self.paths_sep).fetch(5)
+                columnas_detectadas = df_preview.columns
                 
-                self.combo_col_sep['values'] = columnas
-                if columnas:
+                # 1. Actualizar el dropdown con las columnas detectadas
+                self.combo_col_sep['values'] = columnas_detectadas
+                if columnas_detectadas:
                     self.combo_col_sep.current(0)
+                
+                # 2. Generar/actualizar la lista visual de tipos de datos estilo Power Query
+                self._actualizar_ui_tipos_columnas(columnas_detectadas)
+                
                 self.status_sep.config(text=f"Columnas detectadas correctamente en {len(paths)} archivo(s).", fg="green")
-            except Exception as e:
+                except Exception as e:
                 messagebox.showerror("Error", f"No se pudo leer el archivo:\n{e}")
 
     def seleccionar_carpeta_sep(self):
