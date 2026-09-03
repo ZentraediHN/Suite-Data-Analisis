@@ -107,8 +107,10 @@ def obtener_archivo_limpio(filepath):
                     # exportes de sistemas contables como QuickBooks) no trae bien
                     # declarado el rango <dimension> interno. Esto produce filas de
                     # distinto largo ("dentadas"), lo que luego rompe pl.scan_csv con
-                    # "found more fields than defined in Schema". Se rellenan con None
-                    # todas las filas hasta el largo máximo detectado en la hoja.
+                    # "found more fields than defined in Schema".
+                    # Se usa un largo "provisional" (el máximo detectado) solo para
+                    # poder inspeccionar la fila de encabezado de forma segura; el
+                    # ancho final real se decide más abajo con base en el encabezado.
                     if filas:
                         max_len = max(len(r) for r in filas)
                         filas = [
@@ -127,12 +129,30 @@ def obtener_archivo_limpio(filepath):
                     if header_idx is None:
                         continue  # Pestaña vacía o sin estructura válida
 
+                    # --- Ancho real de la tabla, según el propio encabezado ---
+                    # Una columna de datos real siempre trae un título. Si a la
+                    # derecha del último título no vacío quedan celdas con basura
+                    # (caracteres sueltos, espacios, restos de formato en filas muy
+                    # abajo del archivo), se descartan en vez de crear columnas
+                    # fantasma tipo "Columna_10", "Columna_11", etc. Esto también
+                    # evita que archivos del mismo reporte terminen con distinto
+                    # número de columnas al combinarlos.
+                    header_row = filas[header_idx]
+                    ancho_real = 0
+                    for i, c in enumerate(header_row):
+                        if c is not None and str(c).strip() != "":
+                            ancho_real = i + 1
+
                     # Escribir contenido formateando números enteros para que no tengan ".0"
                     for idx, row in enumerate(filas):
                         if idx < header_idx:
                             continue  # Salta metadatos superiores
                         if idx == header_idx and header_escrito:
                             continue  # Evita duplicar el encabezado
+
+                        row = row[:ancho_real]
+                        if len(row) < ancho_real:
+                            row = tuple(row) + (None,) * (ancho_real - len(row))
 
                         # Limpieza de valores: Si es flotante entero (ej. 4158.0), convertir a "4158"
                         fila_limpia = []
@@ -145,6 +165,7 @@ def obtener_archivo_limpio(filepath):
                                 fila_limpia.append(str(c))
 
                         writer.writerow(fila_limpia)
+
 
                     header_escrito = True
 
@@ -617,7 +638,11 @@ class SuiteContableIntegrada:
                         [c.strip() for c in cols_originales]
                     )))
                     frames.append(lf.rename(cols_limpias))
-                return pl.concat(frames)
+                # 'diagonal_relaxed': si algún archivo trae columnas de más o de
+                # menos respecto a los otros, las faltantes se completan con nulo
+                # en vez de fallar por schemas distintos (además, además de la
+                # limpieza en obtener_archivo_limpio, actúa como red de seguridad).
+                return pl.concat(frames, how="diagonal_relaxed")
 
     def _limpiar_nombres_columnas(self, raw_cols):
         columnas = []
