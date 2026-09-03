@@ -717,6 +717,7 @@ class SuiteContableIntegrada:
         self.col_name_sep = tk.StringVar()
         self.out_dir_sep = tk.StringVar()
         self.format_sep = tk.StringVar(value="csv")
+        self.filtro_valores_sep = tk.StringVar()
 
         tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
         f_file = tk.Frame(self.tab_separador)
@@ -724,18 +725,46 @@ class SuiteContableIntegrada:
         tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
         tk.Button(f_file, text="Examinar...", command=self.seleccionar_archivos_sep).pack(side=tk.LEFT)
 
-        tk.Label(self.tab_separador, text="2. Columna para Separar Cuentas:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        tk.Label(self.tab_separador, text="2. Columna para Separar (Ej: Cuenta, Nombre, RTN):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
         self.combo_col_sep = ttk.Combobox(self.tab_separador, textvariable=self.col_name_sep, state="readonly", width=47)
         self.combo_col_sep.pack()
+        self.combo_col_sep.bind("<<ComboboxSelected>>", self._on_columna_sep_cambiada)
 
-        tk.Label(self.tab_separador, text="3. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        tk.Label(self.tab_separador, text="3. Selecciona los Valores a Generar (por defecto, todos):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+
+        f_filtro = tk.Frame(self.tab_separador)
+        f_filtro.pack(fill="x", padx=15)
+        tk.Entry(f_filtro, textvariable=self.filtro_valores_sep, width=35).pack(side=tk.LEFT, padx=(0, 5), fill="x", expand=True)
+        tk.Button(f_filtro, text="🔎 Filtrar", command=self._filtrar_valores_sep).pack(side=tk.LEFT)
+
+        f_list = tk.Frame(self.tab_separador)
+        f_list.pack(pady=(5, 0))
+        self.listbox_valores_sep = tk.Listbox(f_list, selectmode=tk.EXTENDED, width=45, height=8, exportselection=0)
+        scrollbar_sep = tk.Scrollbar(f_list, orient="vertical", command=self.listbox_valores_sep.yview)
+        self.listbox_valores_sep.config(yscrollcommand=scrollbar_sep.set)
+        self.listbox_valores_sep.pack(side=tk.LEFT)
+        scrollbar_sep.pack(side=tk.LEFT, fill="y")
+
+        f_botones_sel = tk.Frame(self.tab_separador)
+        f_botones_sel.pack(pady=(5, 0))
+        tk.Button(f_botones_sel, text="Seleccionar Todas", command=self._seleccionar_todas_valores_sep).pack(side=tk.LEFT, padx=5)
+        tk.Button(f_botones_sel, text="Deseleccionar Todas", command=self._deseleccionar_todas_valores_sep).pack(side=tk.LEFT, padx=5)
+
+        self.lbl_conteo_valores_sep = tk.Label(self.tab_separador, text="Selecciona un archivo y una columna para ver los valores disponibles.", fg="gray", font=("Arial", 8))
+        self.lbl_conteo_valores_sep.pack(pady=(3, 0))
+        self.listbox_valores_sep.bind("<<ListboxSelect>>", lambda e: self._actualizar_conteo_valores_sep())
+
+        # Cache interno: todos los valores únicos detectados para la columna actual (sin filtrar por texto)
+        self._todas_las_cuentas_sep = []
+
+        tk.Label(self.tab_separador, text="4. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
         f_fmt = tk.Frame(self.tab_separador)
         f_fmt.pack()
         tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_sep, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
         tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_sep, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
         tk.Radiobutton(f_fmt, text="Parquet (.parquet)", variable=self.format_sep, value="parquet", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
 
-        tk.Label(self.tab_separador, text="4. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        tk.Label(self.tab_separador, text="5. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
         f_dir = tk.Frame(self.tab_separador)
         f_dir.pack()
         tk.Entry(f_dir, textvariable=self.out_dir_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
@@ -746,6 +775,77 @@ class SuiteContableIntegrada:
 
         self.status_sep = tk.Label(self.tab_separador, text="Esperando instrucciones...", fg="gray")
         self.status_sep.pack()
+
+    def _on_columna_sep_cambiada(self, event=None):
+        """Cuando el usuario cambia la columna por la que quiere separar,
+        se recarga en segundo plano el listín de valores únicos disponibles."""
+        if not self.paths_sep or not self.col_name_sep.get():
+            return
+        self.filtro_valores_sep.set("")
+        self.listbox_valores_sep.delete(0, tk.END)
+        self.listbox_valores_sep.insert(tk.END, "Cargando valores disponibles...")
+        self.status_sep.config(text="Detectando valores únicos de la columna seleccionada...", fg="blue")
+        threading.Thread(target=self._cargar_valores_sep_thread, daemon=True).start()
+
+    def _cargar_valores_sep_thread(self):
+        col = self.col_name_sep.get()
+        try:
+            lazy_base = self._obtener_lazy_frame(self.paths_sep, {col: pl.String})
+            lazy_valores = (
+                lazy_base
+                .with_columns(pl.col(col).cast(pl.Utf8).str.strip_chars().replace("", None))
+                .filter(~pl.col(col).str.contains(r"(?i)\btotal\b").fill_null(False))
+                .with_columns(pl.col(col).forward_fill())
+                .filter(pl.col(col).is_not_null())
+            )
+            df_valores = lazy_valores.select(pl.col(col)).unique().collect()
+            valores = sorted(str(v) for v in df_valores[col].to_list() if v is not None)
+            self.root.after(0, self._poblar_listbox_valores_sep, valores)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", f"No se pudo obtener el listado de valores:\n{e}"))
+            self.root.after(0, lambda: self.status_sep.config(text="Error al detectar valores.", fg="red"))
+
+    def _poblar_listbox_valores_sep(self, valores):
+        self._todas_las_cuentas_sep = valores
+        self.listbox_valores_sep.delete(0, tk.END)
+        for v in valores:
+            self.listbox_valores_sep.insert(tk.END, v)
+        # Por defecto, se seleccionan TODOS los valores (el usuario puede deseleccionar)
+        self.listbox_valores_sep.select_set(0, tk.END)
+        self._actualizar_conteo_valores_sep()
+        self.status_sep.config(text=f"{len(valores)} valor(es) único(s) detectado(s). Todos seleccionados por defecto.", fg="green")
+
+    def _filtrar_valores_sep(self):
+        """Filtra visualmente el listín por texto sin perder la selección previa
+        de los valores que ya no están visibles."""
+        texto = self.filtro_valores_sep.get().strip().lower()
+        seleccionados_actuales = set(self.listbox_valores_sep.get(i) for i in self.listbox_valores_sep.curselection())
+
+        self.listbox_valores_sep.delete(0, tk.END)
+        valores_a_mostrar = [v for v in self._todas_las_cuentas_sep if texto in v.lower()] if texto else self._todas_las_cuentas_sep
+        for v in valores_a_mostrar:
+            self.listbox_valores_sep.insert(tk.END, v)
+
+        for idx, v in enumerate(valores_a_mostrar):
+            if v in seleccionados_actuales:
+                self.listbox_valores_sep.select_set(idx)
+        self._actualizar_conteo_valores_sep()
+
+    def _seleccionar_todas_valores_sep(self):
+        self.listbox_valores_sep.select_set(0, tk.END)
+        self._actualizar_conteo_valores_sep()
+
+    def _deseleccionar_todas_valores_sep(self):
+        self.listbox_valores_sep.select_clear(0, tk.END)
+        self._actualizar_conteo_valores_sep()
+
+    def _actualizar_conteo_valores_sep(self):
+        total_visibles = self.listbox_valores_sep.size()
+        total_sel = len(self.listbox_valores_sep.curselection())
+        self.lbl_conteo_valores_sep.config(
+            text=f"{total_sel} de {total_visibles} valor(es) visibles seleccionados "
+                 f"(total detectado: {len(self._todas_las_cuentas_sep)})."
+        )
 
     def seleccionar_archivos_sep(self):
         paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
@@ -768,6 +868,11 @@ class SuiteContableIntegrada:
                 self._actualizar_ui_tipos_columnas(columnas_detectadas)
                 
                 self.status_sep.config(text=f"Columnas detectadas correctamente en {len(paths)} archivo(s).", fg="green")
+
+                # 3. Cargar automáticamente el listín de valores únicos de la columna
+                #    que quedó seleccionada por defecto (ej. Account/Cuenta)
+                if columnas_detectadas:
+                    self._on_columna_sep_cambiada()
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo leer el archivo:\n{e}")
 
@@ -781,6 +886,18 @@ class SuiteContableIntegrada:
             messagebox.showwarning("Datos Incompletos", "Completa todos los campos.")
             return
 
+        if not self.listbox_valores_sep.curselection():
+            messagebox.showwarning(
+                "Sin valores seleccionados",
+                "Selecciona al menos un valor de la lista (o usa 'Seleccionar Todas')."
+            )
+            return
+
+        # Se captura la selección del listín aquí, en el hilo principal de Tkinter,
+        # antes de pasarla al hilo de trabajo (los widgets no deben tocarse desde otro hilo).
+        indices_sel = self.listbox_valores_sep.curselection()
+        self._cuentas_seleccionadas_sep = [self.listbox_valores_sep.get(i) for i in indices_sel]
+
         self.btn_process_sep.config(state=tk.DISABLED)
         self.status_sep.config(text="Procesando datos con Polars...", fg="blue")
         threading.Thread(target=self._separar_datos_thread, daemon=True).start()
@@ -790,6 +907,13 @@ class SuiteContableIntegrada:
         col = self.col_name_sep.get()
         carpeta_out = self.out_dir_sep.get()
         formato = self.format_sep.get()
+
+        # Valores marcados por el usuario en el listín (por defecto, todos vienen
+        # pre-seleccionados al detectarse; el usuario puede deseleccionar algunos).
+        # Se toma una copia en el hilo principal antes de iniciar el hilo de trabajo
+        # para no tocar el widget de Tkinter fuera del hilo principal.
+        cuentas = list(self._cuentas_seleccionadas_sep) if hasattr(self, '_cuentas_seleccionadas_sep') else []
+
         try:
             os.makedirs(carpeta_out, exist_ok=True)
             lazy_base = self._obtener_lazy_frame(self.paths_sep, {col: pl.String})
@@ -815,10 +939,14 @@ class SuiteContableIntegrada:
                 # 4. Eliminar filas no asignadas
                 .filter(pl.col(col).is_not_null())
             )
-    
-            # Obtener el catálogo único de cuentas resultantes
-            df_cuentas = lazy_procesado.select(pl.col(col)).unique().collect()
-            cuentas = [str(c) for c in df_cuentas[col].to_list() if c is not None]
+
+            # Si por algún motivo no se capturó selección previa (ej. el usuario no
+            # llegó a interactuar con el listín), se recalculan todos los valores
+            # únicos del archivo como respaldo, igual que el comportamiento anterior.
+            if not cuentas:
+                df_cuentas = lazy_procesado.select(pl.col(col)).unique().collect()
+                cuentas = [str(c) for c in df_cuentas[col].to_list() if c is not None]
+
             total = len(cuentas)
     
             LIMITE_EXCEL = 1_000_000  # Margen de seguridad bajo el límite de 1,048,576 filas
