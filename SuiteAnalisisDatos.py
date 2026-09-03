@@ -101,6 +101,21 @@ def obtener_archivo_limpio(filepath):
                     else:
                         filas = list(sheet.iter_rows(values_only=True))
 
+                    # --- Normalizar longitud de filas ---
+                    # En modo read_only, openpyxl puede recortar celdas finales vacías
+                    # de forma independiente por fila cuando el archivo (típico de
+                    # exportes de sistemas contables como QuickBooks) no trae bien
+                    # declarado el rango <dimension> interno. Esto produce filas de
+                    # distinto largo ("dentadas"), lo que luego rompe pl.scan_csv con
+                    # "found more fields than defined in Schema". Se rellenan con None
+                    # todas las filas hasta el largo máximo detectado en la hoja.
+                    if filas:
+                        max_len = max(len(r) for r in filas)
+                        filas = [
+                            tuple(r) + (None,) * (max_len - len(r)) if len(r) < max_len else r
+                            for r in filas
+                        ]
+
                     header_idx = None
                     for idx, row in enumerate(filas[:150]):
                         if not row: continue
