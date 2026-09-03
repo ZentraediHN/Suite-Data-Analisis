@@ -569,7 +569,12 @@ class SuiteContableIntegrada:
         if ext == ".parquet":
             lf = pl.scan_parquet(paths)
             cols_originales = list(lf.collect_schema().keys())
-            cols_limpias = {c: c.strip() for c in cols_originales}
+            # Se usa el mismo criterio que _limpiar_nombres_columnas (columnas
+            # vacías o duplicadas -> "Columna_N") para que el DataFrame real
+            # tenga EXACTAMENTE los mismos nombres que se muestran en la UI.
+            cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
+                [c.strip() for c in cols_originales]
+            )))
             
             # Si es Parquet y se especificaron overrides, hacer cast de las columnas
             if overrides_polars:
@@ -592,7 +597,9 @@ class SuiteContableIntegrada:
                     encoding="utf8"  # Se cambia 'utf8-lossy' por 'utf8' estricto
                 )
                 cols_originales = list(lf.collect_schema().keys())
-                cols_limpias = {c: c.strip() for c in cols_originales}
+                cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
+                    [c.strip() for c in cols_originales]
+                )))
                 return lf.rename(cols_limpias)
             else:
                 frames = []
@@ -606,7 +613,9 @@ class SuiteContableIntegrada:
                         encoding="utf8"  # Se cambia 'utf8-lossy' por 'utf8' estricto
                     )
                     cols_originales = list(lf.collect_schema().keys())
-                    cols_limpias = {c: c.strip() for c in cols_originales}
+                    cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
+                        [c.strip() for c in cols_originales]
+                    )))
                     frames.append(lf.rename(cols_limpias))
                 return pl.concat(frames)
 
