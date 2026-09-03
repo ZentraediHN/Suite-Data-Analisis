@@ -35,7 +35,7 @@ jobs:
       # 4. Ejecutar PyInstaller para crear el ejecutable
       - name: Compilar con PyInstaller
         run: |
-          pyinstaller --onefile --console --collect-all xlsxwriter SuiteAnalisisDatos.py
+          pyinstaller --onefile --noconsole --collect-all xlsxwriter SuiteAnalisisDatos.py
 
       # 5. Subir el archivo compilado como un "Artefacto" de GitHub
       - name: Subir ejecutable final
