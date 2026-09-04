@@ -666,7 +666,7 @@ class SuiteContableIntegrada:
             self.frame_tipos.destroy()
     
         # Contenedor principal para la asignación de tipos estilo Power Query
-        self.frame_tipos = ttk.LabelFrame(self.tab_separador, text=" Asignación de Tipos de Datos (Power Query) ", padding=10)
+        self.frame_tipos = ttk.LabelFrame(self.frame_contenido_sep, text=" Asignación de Tipos de Datos (Power Query) ", padding=10)
         self.frame_tipos.pack(fill="x", padx=15, pady=10)
     
         # Canvas con scrollbar por si hay muchas columnas
@@ -719,25 +719,58 @@ class SuiteContableIntegrada:
         self.format_sep = tk.StringVar(value="csv")
         self.filtro_valores_sep = tk.StringVar()
 
-        tk.Label(self.tab_separador, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        f_file = tk.Frame(self.tab_separador)
+        # --- Contenedor con scroll vertical para toda la pestaña ---
+        # Con el listín de valores y el panel de tipos de datos, el contenido
+        # ya no cabe siempre en la ventana visible; esto permite bajar con la
+        # rueda del mouse o la barra lateral en vez de quedar cortado.
+        canvas_sep = tk.Canvas(self.tab_separador, highlightthickness=0)
+        scrollbar_main_sep = ttk.Scrollbar(self.tab_separador, orient="vertical", command=canvas_sep.yview)
+        self.frame_contenido_sep = tk.Frame(canvas_sep)
+
+        self.frame_contenido_sep.bind(
+            "<Configure>",
+            lambda e: canvas_sep.configure(scrollregion=canvas_sep.bbox("all"))
+        )
+        canvas_sep.create_window((0, 0), window=self.frame_contenido_sep, anchor="nw")
+        canvas_sep.configure(yscrollcommand=scrollbar_main_sep.set)
+
+        canvas_sep.pack(side="left", fill="both", expand=True)
+        scrollbar_main_sep.pack(side="right", fill="y")
+
+        # Scroll con la rueda del mouse solo mientras el cursor esté sobre esta pestaña
+        def _on_mousewheel_sep(event):
+            canvas_sep.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _activar_scroll_sep(event):
+            canvas_sep.bind_all("<MouseWheel>", _on_mousewheel_sep)
+
+        def _desactivar_scroll_sep(event):
+            canvas_sep.unbind_all("<MouseWheel>")
+
+        canvas_sep.bind("<Enter>", _activar_scroll_sep)
+        canvas_sep.bind("<Leave>", _desactivar_scroll_sep)
+
+        cont = self.frame_contenido_sep  # alias corto para el resto del método
+
+        tk.Label(cont, text="1. Selecciona Archivo(s) de Entrada (CSV, Excel o Parquet):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        f_file = tk.Frame(cont)
         f_file.pack()
         tk.Entry(f_file, textvariable=self.file_display_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
         tk.Button(f_file, text="Examinar...", command=self.seleccionar_archivos_sep).pack(side=tk.LEFT)
 
-        tk.Label(self.tab_separador, text="2. Columna para Separar (Ej: Cuenta, Nombre, RTN):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        self.combo_col_sep = ttk.Combobox(self.tab_separador, textvariable=self.col_name_sep, state="readonly", width=47)
+        tk.Label(cont, text="2. Columna para Separar (Ej: Cuenta, Nombre, RTN):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        self.combo_col_sep = ttk.Combobox(cont, textvariable=self.col_name_sep, state="readonly", width=47)
         self.combo_col_sep.pack()
         self.combo_col_sep.bind("<<ComboboxSelected>>", self._on_columna_sep_cambiada)
 
-        tk.Label(self.tab_separador, text="3. Selecciona los Valores a Generar (por defecto, todos):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        tk.Label(cont, text="3. Selecciona los Valores a Generar (por defecto, todos):", font=("Arial", 10, "bold")).pack(pady=(15, 5))
 
-        f_filtro = tk.Frame(self.tab_separador)
-        f_filtro.pack(fill="x", padx=15)
-        tk.Entry(f_filtro, textvariable=self.filtro_valores_sep, width=35).pack(side=tk.LEFT, padx=(0, 5), fill="x", expand=True)
+        f_filtro = tk.Frame(cont)
+        f_filtro.pack()
+        tk.Entry(f_filtro, textvariable=self.filtro_valores_sep, width=35).pack(side=tk.LEFT, padx=(0, 5))
         tk.Button(f_filtro, text="🔎 Filtrar", command=self._filtrar_valores_sep).pack(side=tk.LEFT)
 
-        f_list = tk.Frame(self.tab_separador)
+        f_list = tk.Frame(cont)
         f_list.pack(pady=(5, 0))
         self.listbox_valores_sep = tk.Listbox(f_list, selectmode=tk.EXTENDED, width=45, height=8, exportselection=0)
         scrollbar_sep = tk.Scrollbar(f_list, orient="vertical", command=self.listbox_valores_sep.yview)
@@ -745,35 +778,35 @@ class SuiteContableIntegrada:
         self.listbox_valores_sep.pack(side=tk.LEFT)
         scrollbar_sep.pack(side=tk.LEFT, fill="y")
 
-        f_botones_sel = tk.Frame(self.tab_separador)
+        f_botones_sel = tk.Frame(cont)
         f_botones_sel.pack(pady=(5, 0))
         tk.Button(f_botones_sel, text="Seleccionar Todas", command=self._seleccionar_todas_valores_sep).pack(side=tk.LEFT, padx=5)
         tk.Button(f_botones_sel, text="Deseleccionar Todas", command=self._deseleccionar_todas_valores_sep).pack(side=tk.LEFT, padx=5)
 
-        self.lbl_conteo_valores_sep = tk.Label(self.tab_separador, text="Selecciona un archivo y una columna para ver los valores disponibles.", fg="gray", font=("Arial", 8))
+        self.lbl_conteo_valores_sep = tk.Label(cont, text="Selecciona un archivo y una columna para ver los valores disponibles.", fg="gray", font=("Arial", 8))
         self.lbl_conteo_valores_sep.pack(pady=(3, 0))
         self.listbox_valores_sep.bind("<<ListboxSelect>>", lambda e: self._actualizar_conteo_valores_sep())
 
         # Cache interno: todos los valores únicos detectados para la columna actual (sin filtrar por texto)
         self._todas_las_cuentas_sep = []
 
-        tk.Label(self.tab_separador, text="4. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        f_fmt = tk.Frame(self.tab_separador)
+        tk.Label(cont, text="4. Formato de Salida de los Sub-archivos:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        f_fmt = tk.Frame(cont)
         f_fmt.pack()
         tk.Radiobutton(f_fmt, text="CSV (.csv)", variable=self.format_sep, value="csv", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
         tk.Radiobutton(f_fmt, text="Excel (.xlsx)", variable=self.format_sep, value="xlsx", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
         tk.Radiobutton(f_fmt, text="Parquet (.parquet)", variable=self.format_sep, value="parquet", font=("Arial", 9)).pack(side=tk.LEFT, padx=10)
 
-        tk.Label(self.tab_separador, text="5. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
-        f_dir = tk.Frame(self.tab_separador)
+        tk.Label(cont, text="5. Carpeta de Destino:", font=("Arial", 10, "bold")).pack(pady=(15, 5))
+        f_dir = tk.Frame(cont)
         f_dir.pack()
         tk.Entry(f_dir, textvariable=self.out_dir_sep, width=50, state="readonly").pack(side=tk.LEFT, padx=5)
         tk.Button(f_dir, text="Examinar...", command=self.seleccionar_carpeta_sep).pack(side=tk.LEFT)
 
-        self.btn_process_sep = tk.Button(self.tab_separador, text="▶ DIVIDIR ARCHIVOS", command=self.iniciar_proceso_sep, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), pady=5, padx=20)
+        self.btn_process_sep = tk.Button(cont, text="▶ DIVIDIR ARCHIVOS", command=self.iniciar_proceso_sep, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), pady=5, padx=20)
         self.btn_process_sep.pack(pady=20)
 
-        self.status_sep = tk.Label(self.tab_separador, text="Esperando instrucciones...", fg="gray")
+        self.status_sep = tk.Label(cont, text="Esperando instrucciones...", fg="gray")
         self.status_sep.pack()
 
     def _on_columna_sep_cambiada(self, event=None):
