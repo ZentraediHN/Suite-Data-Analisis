@@ -31,6 +31,69 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 _CLEAN_FILES_CACHE = {}
 
+# El diálogo nativo de Windows para seleccionar múltiples archivos NO devuelve
+# las rutas en el orden en que el usuario hizo clic, sino en el orden en que
+# aparecen listadas en la carpeta (normalmente alfabético). Para reportes
+# mensuales (ENERO, FEBRERO, ...) eso deja "ABRIL" antes que "ENERO". Esta
+# utilidad intenta reordenar cronológicamente detectando el mes en español
+# (y el año, si aparece) dentro del propio nombre del archivo.
+_MESES_ES = {
+    # Español, nombre completo
+    'ENERO': 1, 'FEBRERO': 2, 'MARZO': 3, 'ABRIL': 4, 'MAYO': 5, 'JUNIO': 6,
+    'JULIO': 7, 'AGOSTO': 8, 'SEPTIEMBRE': 9, 'SETIEMBRE': 9, 'OCTUBRE': 10,
+    'NOVIEMBRE': 11, 'DICIEMBRE': 12,
+    # Español, abreviaturas comunes
+    'ENE': 1, 'FEB': 2, 'MAR': 3, 'ABR': 4, 'JUN': 6, 'JUL': 7, 'AGO': 8,
+    'SEP': 9, 'SEPT': 9, 'SET': 9, 'OCT': 10, 'NOV': 11, 'DIC': 12,
+    # Inglés, nombre completo (poco común, pero puede pasar en reportes de matrices extranjeras)
+    'JANUARY': 1, 'FEBRUARY': 2, 'MARCH': 3, 'APRIL': 4, 'MAY': 5, 'JUNE': 6,
+    'JULY': 7, 'AUGUST': 8, 'SEPTEMBER': 9, 'OCTOBER': 10, 'NOVEMBER': 11,
+    'DECEMBER': 12,
+    # Inglés, abreviaturas comunes
+    'JAN': 1, 'APR': 4, 'AUG': 8, 'DEC': 12,
+}
+
+def _tokenizar_natural(nombre):
+    """Divide el nombre de archivo en fragmentos de texto y número, y a cada
+    fragmento le antepone una marca de tipo (0=número, 1=texto) para que la
+    comparación entre nombres con estructuras distintas nunca falle por
+    mezclar tipos (int vs texto) al comparar. Los números se comparan por su
+    valor real, no como texto, así 'archivo2' ordena antes que 'archivo10',
+    y '1998' antes que '2023' — sirve igual para meses, años o cualquier
+    numeración secuencial, sin depender de un rango fijo como 1-12."""
+    tokens = []
+    for tok in re.split(r'(\d+)', nombre):
+        if tok.isdigit():
+            tokens.append((0, int(tok)))
+        elif tok:
+            tokens.append((1, tok.lower()))
+    return tokens
+
+def _clave_orden_cronologico(path):
+    """Devuelve una clave de ordenamiento a partir del nombre del archivo:
+    1) Si se detecta un nombre de mes en español, ese mes manda (con el año,
+       si aparece, como desempate) — necesario porque alfabéticamente
+       'ABRIL' no queda antes que 'ENERO' aunque cronológicamente sí.
+    2) Si no hay mes reconocible, se usa un orden natural genérico sobre los
+       números presentes en el nombre (ver _tokenizar_natural), en vez de
+       asumir que cualquier número suelto es un mes entre 1 y 12."""
+    nombre = os.path.basename(path).upper()
+    mes_detectado = None
+    for nombre_mes, numero in _MESES_ES.items():
+        # \b...\b exige palabra completa: evita que 'MAYO' se detecte dentro
+        # de 'MAYOR' (como en 'LIBRO MAYOR JUNIO 2023'), o que abreviaturas
+        # cortas como 'MAR' o 'JUN' se disparen dentro de otra palabra.
+        if re.search(r'\b' + nombre_mes + r'\b', nombre):
+            mes_detectado = numero
+            break
+
+    if mes_detectado is not None:
+        anio_match = re.search(r'(19|20)\d{2}', nombre)
+        anio_detectado = int(anio_match.group(0)) if anio_match else 0
+        return (0, anio_detectado, mes_detectado, _tokenizar_natural(nombre))
+
+    return (1, 0, 0, _tokenizar_natural(nombre))
+
 def es_encabezado_real(campos):
     """
     Detecta el encabezado buscando la transición de 'predominantemente texto' 
@@ -91,8 +154,16 @@ def obtener_archivo_limpio(filepath):
                     wb = xlrd.open_workbook(filepath)
                     hojas = [wb.sheet_by_index(i) for i in range(wb.nsheets)]
                 else:
-                    # Sin data_only=True para evitar que openpyxl convierta enteros en flotantes automáticamente
-                    wb = openpyxl.load_workbook(filepath, read_only=True)
+                    # data_only=True: se lee el ÚLTIMO VALOR CALCULADO de las fórmulas
+                    # (ej. =+F7302*G7302 -> 8695.65) en vez del texto de la fórmula.
+                    # Sin esto, celdas con fórmulas llegaban como texto ("=F7302*G7302")
+                    # y la limpieza numérica posterior (que quita todo lo que no sea
+                    # dígito) terminaba pegando las referencias de celda como si fueran
+                    # el valor (ej. "73027302"), generando cifras absurdamente altas.
+                    # El problema previo de que los enteros llegaran como flotantes
+                    # (4158 -> 4158.0) ya se resuelve más abajo, en la limpieza de
+                    # 'fila_limpia', así que ya no es un obstáculo para usar data_only.
+                    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
                     hojas = wb.worksheets
 
                 for sheet in hojas:
@@ -586,33 +657,34 @@ class SuiteContableIntegrada:
                 elif isinstance(tipo_val, pl.DataType):
                     overrides_polars[col_name] = tipo_val
 
-        ext = os.path.splitext(paths[0])[1].lower()
-        if ext == ".parquet":
-            lf = pl.scan_parquet(paths)
-            cols_originales = list(lf.collect_schema().keys())
-            # Se usa el mismo criterio que _limpiar_nombres_columnas (columnas
-            # vacías o duplicadas -> "Columna_N") para que el DataFrame real
-            # tenga EXACTAMENTE los mismos nombres que se muestran en la UI.
-            cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
-                [c.strip() for c in cols_originales]
-            )))
-            
-            # Si es Parquet y se especificaron overrides, hacer cast de las columnas
-            if overrides_polars:
-                exprs = [
-                    pl.col(c).cast(overrides_polars[c]) 
-                    for c in overrides_polars if c in cols_originales
-                ]
-                if exprs:
-                    lf = lf.with_columns(exprs)
-                    
-            return lf.rename(cols_limpias)
-        else:
-            if len(paths) == 1:
-                clean_path, sep = obtener_archivo_limpio(paths[0])
+        # --- Se procesa cada archivo según SU PROPIA extensión ---
+        # (antes se decidía el modo de lectura completo según la extensión del
+        # primer archivo, así que no se podía mezclar, por ejemplo, un .parquet
+        # ya consolidado con un .xlsx nuevo del año más reciente en la misma
+        # selección; ahora cada archivo se lee con el método que le corresponde
+        # y luego todos se combinan con diagonal_relaxed).
+        frames = []
+        for p in paths:
+            ext_p = os.path.splitext(p)[1].lower()
+            if ext_p == ".parquet":
+                lf = pl.scan_parquet(p)
+                cols_originales = list(lf.collect_schema().keys())
+                cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
+                    [c.strip() for c in cols_originales]
+                )))
+                if overrides_polars:
+                    exprs = [
+                        pl.col(c).cast(overrides_polars[c])
+                        for c in overrides_polars if c in cols_originales
+                    ]
+                    if exprs:
+                        lf = lf.with_columns(exprs)
+                frames.append(lf.rename(cols_limpias))
+            else:
+                clean_path, sep = obtener_archivo_limpio(p)
                 lf = pl.scan_csv(
-                    clean_path, 
-                    separator=sep, 
+                    clean_path,
+                    separator=sep,
                     schema_overrides=overrides_polars if overrides_polars else None,
                     ignore_errors=True,
                     encoding="utf8"  # Se cambia 'utf8-lossy' por 'utf8' estricto
@@ -621,28 +693,16 @@ class SuiteContableIntegrada:
                 cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
                     [c.strip() for c in cols_originales]
                 )))
-                return lf.rename(cols_limpias)
-            else:
-                frames = []
-                for p in paths:
-                    clean_path, sep = obtener_archivo_limpio(p)
-                    lf = pl.scan_csv(
-                        clean_path, 
-                        separator=sep, 
-                        schema_overrides=overrides_polars if overrides_polars else None,
-                        ignore_errors=True,
-                        encoding="utf8"  # Se cambia 'utf8-lossy' por 'utf8' estricto
-                    )
-                    cols_originales = list(lf.collect_schema().keys())
-                    cols_limpias = dict(zip(cols_originales, self._limpiar_nombres_columnas(
-                        [c.strip() for c in cols_originales]
-                    )))
-                    frames.append(lf.rename(cols_limpias))
-                # 'diagonal_relaxed': si algún archivo trae columnas de más o de
-                # menos respecto a los otros, las faltantes se completan con nulo
-                # en vez de fallar por schemas distintos (además, además de la
-                # limpieza en obtener_archivo_limpio, actúa como red de seguridad).
-                return pl.concat(frames, how="diagonal_relaxed")
+                frames.append(lf.rename(cols_limpias))
+
+        if len(frames) == 1:
+            return frames[0]
+
+        # 'diagonal_relaxed': si algún archivo trae columnas de más o de
+        # menos respecto a los otros, las faltantes se completan con nulo
+        # en vez de fallar por schemas distintos (además de la limpieza en
+        # obtener_archivo_limpio, actúa como red de seguridad).
+        return pl.concat(frames, how="diagonal_relaxed")
 
     def _limpiar_nombres_columnas(self, raw_cols):
         columnas = []
@@ -731,7 +791,14 @@ class SuiteContableIntegrada:
             "<Configure>",
             lambda e: canvas_sep.configure(scrollregion=canvas_sep.bbox("all"))
         )
-        canvas_sep.create_window((0, 0), window=self.frame_contenido_sep, anchor="nw")
+        # anchor="n" + recalcular la coordenada x en cada resize mantiene el
+        # contenido centrado horizontalmente, en vez de pegado a la izquierda.
+        ventana_id_sep = canvas_sep.create_window((0, 0), window=self.frame_contenido_sep, anchor="n")
+
+        def _centrar_contenido_sep(event):
+            canvas_sep.coords(ventana_id_sep, event.width / 2, 0)
+
+        canvas_sep.bind("<Configure>", _centrar_contenido_sep)
         canvas_sep.configure(yscrollcommand=scrollbar_main_sep.set)
 
         canvas_sep.pack(side="left", fill="both", expand=True)
@@ -883,6 +950,7 @@ class SuiteContableIntegrada:
     def seleccionar_archivos_sep(self):
         paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
         if paths:
+            paths = sorted(paths, key=_clave_orden_cronologico)
             self.paths_sep = list(paths)
             self.file_display_sep.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
             self.out_dir_sep.set(os.path.join(os.path.dirname(paths[0]), "Movimientos_Separados"))
@@ -1098,6 +1166,7 @@ class SuiteContableIntegrada:
     def seleccionar_archivos_res(self):
         paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
         if paths:
+            paths = sorted(paths, key=_clave_orden_cronologico)
             self.paths_res = list(paths)
             self.file_display_res.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
             self.out_file_res.set(os.path.join(os.path.dirname(paths[0]), "Resumen_Balanza_Contable.xlsx"))
@@ -1230,12 +1299,12 @@ class SuiteContableIntegrada:
         self.status_conv.pack()
 
     def seleccionar_archivos_conv(self):
-        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm")])
+        paths = filedialog.askopenfilenames(filetypes=[("Archivos Soportados", "*.csv *.xlsx *.xlsm *.parquet"), ("Archivos CSV", "*.csv"), ("Archivos Excel", "*.xlsx *.xlsm"), ("Archivos Parquet", "*.parquet")])
         if paths:
-            self.paths_conv = list(paths)
-            self.file_display_conv.set(paths[0] if len(paths) == 1 else f"📁 {len(paths)} archivos seleccionados")
-            self.out_file_conv.set(os.path.join(os.path.dirname(paths[0]), "Datos_Contables_Consolidados.parquet"))
-            self.status_conv.config(text=f"{len(paths)} archivo(s) listos para conversión.", fg="green")
+            self.paths_conv = sorted(paths, key=_clave_orden_cronologico)
+            self.file_display_conv.set(self.paths_conv[0] if len(self.paths_conv) == 1 else f"📁 {len(self.paths_conv)} archivos seleccionados")
+            self.out_file_conv.set(os.path.join(os.path.dirname(self.paths_conv[0]), "Datos_Contables_Consolidados.parquet"))
+            self.status_conv.config(text=f"{len(self.paths_conv)} archivo(s) listos para conversión.", fg="green")
 
     def seleccionar_salida_conv(self):
         path = filedialog.asksaveasfilename(defaultextension=".parquet", filetypes=[("Archivo Parquet", "*.parquet")])
@@ -1244,7 +1313,7 @@ class SuiteContableIntegrada:
 
     def iniciar_proceso_conv(self):
         if not self.paths_conv or not self.out_file_conv.get():
-            messagebox.showwarning("Datos Incompletos", "Selecciona los archivos de origen (CSV o Excel) y el destino .parquet.")
+            messagebox.showwarning("Datos Incompletos", "Selecciona los archivos de origen (CSV, Excel o Parquet) y el destino .parquet.")
             return
 
         self.btn_process_conv.config(state=tk.DISABLED)
@@ -1253,13 +1322,25 @@ class SuiteContableIntegrada:
 
     def _convertir_parquet_thread(self):
         archivo_out = self.out_file_conv.get()
+        # Se escribe primero a un archivo temporal y solo al final se reemplaza
+        # el destino real. Esto permite, por ejemplo, seleccionar el mismo
+        # Parquet ya consolidado (años 2019-2022) junto con un Excel nuevo
+        # (2023) y guardar el resultado sobre ese mismo archivo, sin arriesgarse
+        # a leer y escribir el mismo archivo a la vez (lo que podría corromperlo).
+        archivo_out_temp = archivo_out + ".tmp"
         try:
             lazy_df = self._obtener_lazy_frame(self.paths_conv)
-            lazy_df.sink_parquet(archivo_out, compression="zstd")
+            lazy_df.sink_parquet(archivo_out_temp, compression="zstd")
+            shutil.move(archivo_out_temp, archivo_out)
 
             self.root.after(0, self.status_conv.config, {"text": "✅ Conversión a Parquet completada.", "fg": "green"})
             self.root.after(0, messagebox.showinfo, "Éxito", f"Se han consolidado {len(self.paths_conv)} archivo(s) en el archivo Parquet:\n{archivo_out}")
         except Exception as e:
+            if os.path.exists(archivo_out_temp):
+                try:
+                    os.remove(archivo_out_temp)
+                except OSError:
+                    pass
             self.root.after(0, messagebox.showerror, "Error Fatal", f"Ocurrió un error:\n{e}")
             self.root.after(0, self.status_conv.config, {"text": "❌ Error.", "fg": "red"})
         finally:
